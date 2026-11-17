@@ -18,3 +18,6 @@ htmlcov/
 .DS_Store
 logs/
 *.log
+
+# local compose overrides used for manual verification
+compose.*.yml

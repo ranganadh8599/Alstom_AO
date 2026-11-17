@@ -1,0 +1,44 @@
+{
+  "agent_id": "it-service-desk",
+  "name": "IT Service Desk",
+  "description": "Resolves IT knowledge questions: account access, VPN, laptop provisioning and software requests. Provides instructions and can open a ticket.",
+  "platform": "alstom-it",
+  "protocol": "a2a",
+  "endpoint": "http://localhost:9101/agents/it",
+  "owner": "IT Service Management",
+  "owner_contact": "servicedesk@example.com",
+  "capabilities": [
+    "vpn troubleshooting",
+    "account access guidance",
+    "software catalog",
+    "laptop provisioning",
+    "ticket creation"
+  ],
+  "input_schema": {
+    "type": "object",
+    "properties": { "message": { "type": "string" } },
+    "required": ["message"]
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": { "answer": { "type": "string" } }
+  },
+  "auth": { "type": "none" },
+  "permissions": {
+    "allowed_roles": ["user", "employee", "it", "platform-admin"],
+    "allowed_actions": ["read", "query", "analyze", "write"],
+    "requires_approval_for": ["write", "execute"],
+    "data_classification": "internal"
+  },
+  "version": "4.1.0",
+  "status": "active",
+  "environment": "dev",
+  "risk_level": "medium",
+  "tags": ["it", "support", "vpn", "access", "laptop"],
+  "examples": [
+    "How do I connect to the VPN from a Mac?",
+    "Which software can I install without a ticket?",
+    "My laptop is slow, what should I do?"
+  ],
+  "metadata": { "ticket_system": "servicenow" }
+}

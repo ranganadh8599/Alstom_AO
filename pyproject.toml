@@ -1,0 +1,64 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "alstom-ao"
+version = "0.1.0"
+description = "Alstom Agent Orchestration - A2A multi-agent orchestration layer with registry, policy, approvals and Langfuse tracing"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Alstom AO Platform Team" }]
+keywords = ["agents", "a2a", "langgraph", "orchestration", "litellm", "opa", "langfuse"]
+
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "pydantic>=2.8",
+  "pydantic-settings>=2.4",
+  "sqlalchemy[asyncio]>=2.0.30",
+  "aiosqlite>=0.20",
+  "httpx>=0.27",
+  "langgraph>=0.2.60",
+  "litellm>=1.50",
+  "langfuse>=3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2",
+  "pytest-asyncio>=0.23",
+  "asgi-lifespan>=2.1",
+  "ruff>=0.6",
+]
+postgres = [
+  "asyncpg>=0.29",
+  "langgraph-checkpoint-postgres>=2.0",
+  "psycopg[binary]>=3.2",
+]
+
+[project.scripts]
+alstom-ao = "alstom_ao.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/alstom_ao"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = [
+  "ignore::DeprecationWarning",
+]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+ignore = ["E501", "B008"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]

@@ -1,0 +1,47 @@
+{
+  "agent_id": "finance-invoice-auditor",
+  "name": "Finance Invoice Auditor",
+  "description": "Audits vendor invoices, checks purchase-order and contract alignment, flags duplicate or out-of-policy charges, and prepares correction requests. Never pays an invoice without human approval.",
+  "platform": "alstom-finance",
+  "protocol": "a2a",
+  "endpoint": "http://localhost:9101/agents/finance",
+  "owner": "Finance Operations",
+  "owner_contact": "finance-ops@example.com",
+  "capabilities": [
+    "invoice audit",
+    "duplicate invoice detection",
+    "purchase order reconciliation",
+    "vendor payment status",
+    "expense policy checks"
+  ],
+  "input_schema": {
+    "type": "object",
+    "properties": { "message": { "type": "string" } },
+    "required": ["message"]
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "answer": { "type": "string" },
+      "citations": { "type": "array", "items": { "type": "string" } }
+    }
+  },
+  "auth": { "type": "none" },
+  "permissions": {
+    "allowed_roles": ["user", "finance", "finance-manager", "approver", "platform-admin"],
+    "allowed_actions": ["read", "query", "analyze", "write"],
+    "requires_approval_for": ["write", "update", "payment"],
+    "data_classification": "confidential"
+  },
+  "version": "2.3.0",
+  "status": "active",
+  "environment": "dev",
+  "risk_level": "high",
+  "tags": ["finance", "invoice", "ap", "audit", "vendor"],
+  "examples": [
+    "Can you check invoice INV-2024-0912 for duplicate charges?",
+    "Does this vendor invoice match purchase order PO-7781?",
+    "What is the payment status of supplier Schneider Electric?"
+  ],
+  "metadata": { "cost_center": "AP-001", "sla_seconds": 20 }
+}

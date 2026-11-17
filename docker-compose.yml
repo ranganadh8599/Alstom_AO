@@ -1,0 +1,74 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: alstom
+      POSTGRES_PASSWORD: alstom
+      POSTGRES_DB: alstom_ao
+    ports:
+      - "5432:5432"
+    volumes:
+      - ao_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U alstom -d alstom_ao"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  opa:
+    image: openpolicyagent/opa:1.22.4
+    command: ["run", "--server", "--addr=0.0.0.0:8181", "/policies"]
+    volumes:
+      - ./policies:/policies:ro
+    ports:
+      - "8181:8181"
+    healthcheck:
+      test: ["CMD", "/opa", "eval", "--fail-defined", "data.system.type"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  mock-agents:
+    build: .
+    command: ["uvicorn", "examples.mock_a2a_agents.app:app", "--host", "0.0.0.0", "--port", "9101"]
+    ports:
+      - "9101:9101"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9101/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+      opa:
+        condition: service_started
+      mock-agents:
+        condition: service_started
+    environment:
+      AO_ENVIRONMENT: dev
+      AO_DATABASE_URL: postgresql+asyncpg://alstom:alstom@postgres:5432/alstom_ao
+      AO_DB_AUTO_CREATE: "true"
+      AO_SEED_DEMO_AGENTS: "true"
+      AO_DEMO_AGENT_BASE_URL: http://mock-agents:9101
+      AO_LLM_MODE: ${AO_LLM_MODE:-mock}
+      AO_LLM_MODEL: ${AO_LLM_MODEL:-openai/gpt-4o-mini}
+      AO_LLM_API_KEY: ${AO_LLM_API_KEY:-}
+      AO_LLM_API_BASE: ${AO_LLM_API_BASE:-}
+      AO_POLICY_MODE: ${AO_POLICY_MODE:-observe}
+      AO_OPA_URL: http://opa:8181
+      AO_POLICY_LOCAL_FALLBACK: "true"
+      AO_REQUIRE_USER_IDENTITY: "true"
+      AO_APPROVAL_ALLOW_SELF: "false"
+      AO_LANGFUSE_ENABLED: ${AO_LANGFUSE_ENABLED:-false}
+      AO_LANGFUSE_PUBLIC_KEY: ${AO_LANGFUSE_PUBLIC_KEY:-}
+      AO_LANGFUSE_SECRET_KEY: ${AO_LANGFUSE_SECRET_KEY:-}
+      AO_LANGFUSE_HOST: ${AO_LANGFUSE_HOST:-https://cloud.langfuse.com}
+    ports:
+      - "8080:8080"
+
+volumes:
+  ao_pgdata:

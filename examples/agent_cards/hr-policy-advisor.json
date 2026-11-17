@@ -1,0 +1,46 @@
+{
+  "agent_id": "hr-policy-advisor",
+  "name": "HR Policy Advisor",
+  "description": "Answers employee questions about HR policy: leave, travel, remote work, benefits and onboarding. Read-only; cites the policy document and section.",
+  "platform": "alstom-people",
+  "protocol": "a2a",
+  "endpoint": "http://localhost:9101/agents/hr",
+  "owner": "People & Culture",
+  "owner_contact": "people@example.com",
+  "capabilities": [
+    "hr policy lookup",
+    "leave and absence rules",
+    "travel and expense policy",
+    "benefits questions",
+    "onboarding guidance"
+  ],
+  "input_schema": {
+    "type": "object",
+    "properties": { "message": { "type": "string" } },
+    "required": ["message"]
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "answer": { "type": "string" },
+      "citations": { "type": "array", "items": { "type": "string" } }
+    }
+  },
+  "auth": { "type": "none" },
+  "permissions": {
+    "allowed_roles": ["user", "employee", "manager", "hr", "platform-admin"],
+    "allowed_actions": ["read", "query", "analyze"],
+    "data_classification": "internal"
+  },
+  "version": "1.8.2",
+  "status": "active",
+  "environment": "dev",
+  "risk_level": "low",
+  "tags": ["hr", "policy", "leave", "benefits", "people"],
+  "examples": [
+    "How many days of annual leave do I get after three years?",
+    "What is the travel policy for economy class in Europe?",
+    "Can I work remotely from another country for two weeks?"
+  ],
+  "metadata": { "policy_corpus": "hr-2024.4" }
+}

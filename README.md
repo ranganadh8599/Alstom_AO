@@ -412,7 +412,12 @@ you rely on the offline fallback. Decisions are recorded either way.
   service was audited against, including the two failure modes it now refuses to
   hide (lost checkpoints, duplicate submissions).
 - **Schema**: `alembic upgrade head` (or `AO_DB_AUTO_CREATE=true` for dev).
+  `alembic` ships in the runtime image, so the prod stack can migrate itself.
   Startup **refuses** to seed demo agents when `AO_ENVIRONMENT=prod`.
+- **Prod-like stack**:
+  `docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build`
+  — env=prod, no demo seeding, OPA enforced, live LLM through the gateway,
+  Postgres for state *and* checkpoints.
 - **Durable pauses**: install the `postgres` extra
   (`langgraph-checkpoint-postgres`, `psycopg[binary]`) so an approval pause
   survives a restart. If the checkpoint is gone, approving returns

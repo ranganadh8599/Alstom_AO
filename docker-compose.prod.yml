@@ -1,0 +1,48 @@
+# Production-shaped local stack.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Differences from the dev stack:
+#   * AO_ENVIRONMENT=prod        -> demo seeding refused, AO_DEBUG refused
+#   * demo seeding disabled      -> agents are registered explicitly (real cards)
+#   * schema via Alembic         -> AO_DB_AUTO_CREATE=false, run `alembic upgrade head`
+#   * Postgres checkpointer      -> approval pauses survive a restart
+#   * policy enforced by OPA     -> no silent local fallback
+#   * live LLM via the gateway   -> AO_LLM_MODE=litellm
+services:
+  litellm:
+    environment:
+      DATABASE_URL: postgresql://alstom:alstom@postgres:5432/litellm_ui
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      ALSTOM_AO_AGENT_KEY: ${ALSTOM_AO_AGENT_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    environment:
+      AO_ENVIRONMENT: prod
+      AO_DEBUG: "false"
+      AO_SEED_DEMO_AGENTS: "false"
+      AO_DB_AUTO_CREATE: "false"
+      AO_DATABASE_URL: postgresql+asyncpg://alstom:alstom@postgres:5432/alstom_ao
+      AO_LLM_MODE: litellm
+      AO_LLM_MODEL: gpt-4o-mini
+      AO_LLM_API_BASE: http://litellm:4000
+      AO_LLM_API_KEY: ${AO_LLM_API_KEY}
+      AO_LLM_FALLBACK_MODELS: ""
+      AO_POLICY_MODE: enforce
+      AO_OPA_URL: http://opa:8181
+      AO_POLICY_LOCAL_FALLBACK: "true"
+      AO_A2A_ROUTING: direct
+      AO_REQUIRE_USER_IDENTITY: "true"
+      AO_TRUST_FORWARDED_IDENTITY: "true"
+      AO_APPROVAL_ALLOW_SELF: "false"
+      AO_APPROVAL_ADMIN_BYPASS: "false"
+      AO_METRICS_ENABLED: "true"
+      AO_METRICS_TOKEN: ${AO_METRICS_TOKEN}
+      AO_CORS_ORIGINS: ${AO_CORS_ORIGINS}
+      AO_LANGFUSE_ENABLED: ${AO_LANGFUSE_ENABLED:-false}
+      AO_LANGFUSE_PUBLIC_KEY: ${AO_LANGFUSE_PUBLIC_KEY:-}
+      AO_LANGFUSE_SECRET_KEY: ${AO_LANGFUSE_SECRET_KEY:-}
+      AO_LANGFUSE_HOST: ${AO_LANGFUSE_HOST:-https://cloud.langfuse.com}

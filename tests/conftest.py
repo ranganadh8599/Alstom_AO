@@ -11,6 +11,13 @@ import pytest
 from alstom_ao.config import Settings
 from alstom_ao.main import create_app, initialize_app, shutdown_app
 
+# Tests must never inherit the developer's `.env`. Settings() reads `.env` from the
+# working directory, so a local prod-ish file (AO_ENVIRONMENT=prod,
+# AO_DB_AUTO_CREATE=false, AO_LLM_MODE=litellm) silently changes test behaviour and
+# breaks hermeticity. Disabling the env file here keeps every fixture deterministic;
+# individual tests still override anything they need explicitly.
+Settings.model_config["env_file"] = None
+
 AGENT_TEXT = "{agent} handled: {query}"
 
 

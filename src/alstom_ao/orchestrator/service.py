@@ -29,7 +29,13 @@ from alstom_ao.domain.models import (
     RunResult,
     TraceEvent,
 )
-from alstom_ao.errors import AppError, BudgetExceededError, ConflictError, NotFoundError, UpstreamUnavailableError
+from alstom_ao.errors import (
+    AppError,
+    BudgetExceededError,
+    ConflictError,
+    NotFoundError,
+    UpstreamUnavailableError,
+)
 from alstom_ao.llm.gateway import LLMBudget, build_gateway
 from alstom_ao.observability.metrics import metrics
 from alstom_ao.observability.tracing import new_trace_id
@@ -97,6 +103,57 @@ class RunService:
         async with self.database.session() as session:
             return await PolicyDecisionRepository(session).list_for_run(run_id)
 
+    async def _find_idempotent(self, user_id: str, idempotency_key: str) -> RunRecord | None:
+        if not idempotency_key:
+            return None
+        async with self.database.session() as session:
+            return await RunRepository(session).find_by_idempotency(
+                user_id=user_id, idempotency_key=idempotency_key
+            )
+
+    async def _replay(self, record: RunRecord, started: float) -> RunResult:
+        """Rebuild the response of an earlier run without executing anything."""
+
+        events = await self.get_trace(record.run_id)
+        decisions = await self.get_policy_decisions(record.run_id)
+        approval = await self.services.approvals.get_by_run(record.run_id)
+
+        # Reconstruct per-agent results from the ledger so the caller gets the
+        # same payload shape as a live run.
+        agent_results: list[InvocationResult] = []
+        for event in events:
+            if event.action != TraceAction.AGENT_COMPLETED or not event.agent_id:
+                continue
+            output = event.output or {}
+            agent_results.append(
+                InvocationResult(
+                    agent_id=event.agent_id,
+                    agent_name=str(output.get("agent_name") or event.agent_id),
+                    agent_version=event.agent_version or "",
+                    protocol=event.protocol or "a2a",
+                    status=TraceStatus.SUCCEEDED,
+                    text=str(output.get("text") or ""),
+                    artifacts=list(output.get("artifacts") or []),
+                    latency_ms=event.latency_ms or 0,
+                    retry_count=event.retry_count,
+                )
+            )
+
+        return RunResult(
+            run_id=record.run_id,
+            workflow_id=record.workflow_id,
+            trace_id=record.trace_id,
+            status=record.status,
+            response=record.response,
+            plan=record.plan,
+            agent_results=agent_results,
+            approval=approval,
+            policy_decisions=decisions,
+            usage=record.usage,
+            langfuse_url=record.langfuse_url,
+            duration_ms=int((time.perf_counter() - started) * 1000),
+        )
+
     async def list_runs(
         self,
         *,
@@ -122,9 +179,20 @@ class RunService:
         conversation: list[dict[str, str]] | None = None,
         trace_id: str | None = None,
         workflow_id: str | None = None,
+        idempotency_key: str | None = None,
     ) -> RunResult:
         settings = self.settings
         started = time.perf_counter()
+
+        # A retried submission must never start a second run: an approved write
+        # would otherwise execute twice. Returning the first run's result makes
+        # the endpoint idempotent.
+        if idempotency_key:
+            existing = await self._find_idempotent(identity.user.user_id, idempotency_key)
+            if existing is not None:
+                metrics.incr("ao.runs.idempotent_replay")
+                return await self._replay(existing, started)
+
         run_id = f"run_{uuid.uuid4().hex[:24]}"
         workflow_id = workflow_id or f"wf_{uuid.uuid4().hex[:24]}"
         trace = trace_id if trace_id and len(trace_id) == 32 else new_trace_id()
@@ -139,9 +207,18 @@ class RunService:
             environment=environment,
             use_case=use_case,
             identity=identity,
+            idempotency_key=idempotency_key,
         )
-        async with self.database.session() as session:
-            await RunRepository(session).create(record)
+        try:
+            async with self.database.session() as session:
+                await RunRepository(session).create(record)
+        except ConflictError:
+            # Lost a race with a concurrent identical submission: reuse the winner.
+            existing = await self._find_idempotent(identity.user.user_id, idempotency_key or "")
+            if existing is None:
+                raise
+            metrics.incr("ao.runs.idempotent_replay")
+            return await self._replay(existing, started)
 
         metrics.incr("ao.runs.started")
         runtime = self._build_runtime(
@@ -187,6 +264,32 @@ class RunService:
             resume=False,
         )
 
+    async def ensure_resumable(self, run_id: str) -> None:
+        """Refuse to resume a run whose graph state is gone.
+
+        Without a durable checkpointer, an in-flight pause lives only in memory.
+        After a restart the approval row still exists, so approving would look
+        successful while executing nothing. Fail loudly instead.
+        """
+
+        config = {"configurable": {"thread_id": run_id}}
+        try:
+            snapshot = await self.graph.aget_state(config)
+        except Exception as exc:  # pragma: no cover - checkpointer edge cases
+            raise ConflictError(
+                "This run's orchestration state could not be read, so it cannot be resumed.",
+                details=str(exc),
+                code="run_state_unavailable",
+            ) from exc
+
+        if not snapshot or not (snapshot.values or {}):
+            raise ConflictError(
+                "This run's paused orchestration state is no longer available, so it cannot be resumed. "
+                "Nothing was executed. Install a durable checkpointer (Postgres + the 'postgres' extra) "
+                "so paused runs survive a restart.",
+                code="run_state_unavailable",
+            )
+
     async def resume(
         self,
         *,
@@ -203,6 +306,7 @@ class RunService:
         approval = await self.services.approvals.get_by_run(run_id)
         if approval is None:
             raise NotFoundError(f"Run '{run_id}' has no approval request.")
+        await self.ensure_resumable(run_id)
 
         started = time.perf_counter()
         runtime = self._build_runtime(

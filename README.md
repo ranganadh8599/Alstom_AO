@@ -45,7 +45,10 @@ consequential**, and traces every hop to **Langfuse** with dual identity.
 | Human-in-the-loop | Dynamic risk assessment + LangGraph `interrupt`; survives restart with a Postgres checkpointer |
 | Observability | One Langfuse trace per run, one span per node/agent, plus a durable `trace_events` ledger |
 | Dual identity | User headers + service identity preserved into every agent call and trace event |
-| Cost control | Per-run token/call/cost budget in the LLM gateway |
+| Access control | Runs/approvals are owner-scoped; approvers are tenant-scoped; platform admins global |
+| Idempotent submissions | `Idempotency-Key` header: a retried POST returns the first run, never re-executes |
+| Cost control | Per-run token/call/volume/cost budget in the LLM gateway |
+| Trace retention | `scripts/prune_trace_events.py` with dry-run, batching and stats |
 | Virtual model | OpenAI-compatible `/v1/chat/completions` (streaming and non-streaming) |
 | Modular adapters | `AgentAdapter` ABC; A2A today, MCP/REST later without touching the orchestrator |
 
@@ -399,15 +402,21 @@ you rely on the offline fallback. Decisions are recorded either way.
 
 ## Production notes
 
+- **Readiness**: see [docs/production.md](docs/production.md) for the checklist this
+  service was audited against, including the two failure modes it now refuses to
+  hide (lost checkpoints, duplicate submissions).
 - **Schema**: `alembic upgrade head` (or `AO_DB_AUTO_CREATE=true` for dev).
-- **Agent routing**: `AO_A2A_ROUTING=litellm_proxy` requires the gateway to be
-  reachable and a virtual key to be configured; the gateway then owns upstream
-  agent credentials, logs and spend. Keep the registry authoritative and
-  regenerate the gateway config with `scripts/export_litellm_agents.py`.
+  Startup **refuses** to seed demo agents when `AO_ENVIRONMENT=prod`.
 - **Durable pauses**: install the `postgres` extra
   (`langgraph-checkpoint-postgres`, `psycopg[binary]`) so an approval pause
-  survives a process restart. Without it the run/trace/approval ledger survives,
-  but the in-flight graph is held in memory.
+  survives a restart. If the checkpoint is gone, approving returns
+  `409 run_state_unavailable` instead of silently executing nothing.
+- **Idempotency**: send `Idempotency-Key` from the UI on submit. The same
+  key + user returns the original run (including a pending approval) and never
+  re-invokes an agent.
+- **Access control**: runs are readable by their owner, same-tenant reviewers, and
+  platform admins. Approver roles are tenant-scoped; only `platform-admin` is
+  global. Forward `X-Tenant-Id` for multi-tenant isolation.
 - **Identity trust**: the platform trusts `X-User-*` headers. Terminate auth at
   the edge and strip these headers from untrusted clients, or set
   `AO_TRUST_FORWARDED_IDENTITY=false`.
@@ -417,8 +426,10 @@ you rely on the offline fallback. Decisions are recorded either way.
   limit because usage is persisted with the run.
 - **Failure isolation**: a broken agent yields a labelled partial answer; a broken
   LLM gateway falls back to deterministic concatenation.
-- **Metrics**: `/metrics` exposes counters (`ao.runs.*`, `ao.approvals.*`) without
-  extra dependencies.
+- **Metrics**: `/metrics` exposes counters (`ao.runs.*`, `ao.approvals.*`); set
+  `AO_METRICS_TOKEN` to require a scrape token.
+- **Retention**: run `python scripts/prune_trace_events.py --days 90` on a
+  schedule; `--dry-run` and `--stats` are safe to run any time.
 
 ---
 

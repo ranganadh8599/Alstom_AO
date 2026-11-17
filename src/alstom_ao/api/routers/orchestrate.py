@@ -4,15 +4,18 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query, Request
 
-from alstom_ao.api.deps import get_identity, get_run_service
+from alstom_ao.api.deps import AppContainer, get_container, get_identity, get_run_service
 from alstom_ao.api.schemas import (
     OrchestrateRequest,
     OrchestrateResponse,
     PolicyDecisionResponse,
     TraceEventResponse,
+    validate_idempotency_key,
 )
 from alstom_ao.domain.models import IdentityContext, RunRecord
 from alstom_ao.orchestrator.service import RunService
+from alstom_ao.security.access import require_run_access
+from alstom_ao.security.identity import HEADER_IDEMPOTENCY_KEY
 
 router = APIRouter(prefix="/v1", tags=["orchestration"])
 
@@ -32,6 +35,7 @@ async def orchestrate(
         conversation=[turn.model_dump() for turn in payload.conversation],
         trace_id=request.headers.get("x-trace-id"),
         workflow_id=request.headers.get("x-workflow-id"),
+        idempotency_key=validate_idempotency_key(request.headers.get(HEADER_IDEMPOTENCY_KEY)),
     )
     return OrchestrateResponse(run=result)
 
@@ -57,21 +61,25 @@ async def list_runs(
 @router.get("/runs/{run_id}", response_model=RunRecord)
 async def get_run(
     run_id: str,
-    _: IdentityContext = Depends(get_identity),
+    identity: IdentityContext = Depends(get_identity),
     run_service: RunService = Depends(get_run_service),
+    container: AppContainer = Depends(get_container),
 ) -> RunRecord:
-    return await run_service.get_run(run_id)
+    record = await run_service.get_run(run_id)
+    require_run_access(record, identity, container.settings)
+    return record
 
 
 @router.get("/runs/{run_id}/trace", response_model=TraceEventResponse)
 async def get_run_trace(
     run_id: str,
     limit: int = Query(default=500, ge=1, le=2000),
-    _: IdentityContext = Depends(get_identity),
+    identity: IdentityContext = Depends(get_identity),
     run_service: RunService = Depends(get_run_service),
+    container: AppContainer = Depends(get_container),
 ) -> TraceEventResponse:
-    # Ensure the run exists before returning an empty ledger.
-    await run_service.get_run(run_id)
+    record = await run_service.get_run(run_id)
+    require_run_access(record, identity, container.settings)
     events = await run_service.get_trace(run_id)
     return TraceEventResponse(events=[event.model_dump(mode="json") for event in events[:limit]])
 
@@ -79,10 +87,12 @@ async def get_run_trace(
 @router.get("/runs/{run_id}/policy", response_model=PolicyDecisionResponse)
 async def get_run_policy(
     run_id: str,
-    _: IdentityContext = Depends(get_identity),
+    identity: IdentityContext = Depends(get_identity),
     run_service: RunService = Depends(get_run_service),
+    container: AppContainer = Depends(get_container),
 ) -> PolicyDecisionResponse:
-    await run_service.get_run(run_id)
+    record = await run_service.get_run(run_id)
+    require_run_access(record, identity, container.settings)
     decisions = await run_service.get_policy_decisions(run_id)
     return PolicyDecisionResponse(decisions=decisions)
 
@@ -90,12 +100,14 @@ async def get_run_policy(
 @router.get("/runs/{run_id}/timeline")
 async def get_run_timeline(
     run_id: str,
-    _: IdentityContext = Depends(get_identity),
+    identity: IdentityContext = Depends(get_identity),
     run_service: RunService = Depends(get_run_service),
+    container: AppContainer = Depends(get_container),
 ) -> dict:
     """The 'which agents ran before/after' view, reconstructed from the ledger."""
 
     record = await run_service.get_run(run_id)
+    require_run_access(record, identity, container.settings)
     events = await run_service.get_trace(run_id)
     agents = [
         {

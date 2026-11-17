@@ -50,7 +50,11 @@ class AgentRegistryService:
         async with self.database.session() as session:
             return await AgentRepository(session).get_or_raise(agent_id)
 
-    async def list(self, **filters: Any) -> list[AgentCard]:
+    async def list_cards(self, **filters: Any) -> list[AgentCard]:
+        """List cards. Named ``list_cards`` because a method called ``list``
+        shadows the builtin inside the class body and breaks annotation
+        introspection."""
+
         async with self.database.session() as session:
             return await AgentRepository(session).list(**filters)
 
@@ -157,7 +161,7 @@ class AgentRegistryService:
     ) -> list[dict[str, Any]]:
         """Compact, safe catalog for the planner prompt (no endpoints, no auth)."""
 
-        cards = await self.list(environment=environment, status=AgentStatus.ACTIVE, limit=500)
+        cards = await self.list_cards(environment=environment, status=AgentStatus.ACTIVE, limit=500)
         role_set = {role.lower() for role in (roles or [])}
         catalog: list[dict[str, Any]] = []
         for card in cards:

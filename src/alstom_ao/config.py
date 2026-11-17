@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 from functools import lru_cache
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -95,6 +95,7 @@ class Settings(BaseSettings):
     virtual_model_id: str = "alstom-ao"
     max_query_chars: int = 6000
     metrics_enabled: bool = True
+    metrics_token: str | None = None
 
     @field_validator("policy_mode")
     @classmethod
@@ -119,6 +120,18 @@ class Settings(BaseSettings):
         if value not in {"direct", "litellm_proxy"}:
             raise ValueError("a2a_routing must be 'direct' or 'litellm_proxy'")
         return value
+
+    @model_validator(mode="after")
+    def _production_defaults(self) -> Settings:
+        """Tighten unsafe defaults automatically when the environment is production."""
+
+        if self.is_production:
+            # `model_config` allows mutation here: this runs once at construction.
+            if self.debug:
+                raise ValueError("AO_DEBUG must be false in production")
+            # Seeding is refused at startup (see initialize_app) because a hard
+            # failure is clearer than a silent flip; we only note other hazards.
+        return self
 
     @field_validator("litellm_a2a_protocol_version")
     @classmethod

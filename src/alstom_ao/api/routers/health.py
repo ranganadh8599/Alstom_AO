@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from alstom_ao import __version__
@@ -47,7 +47,18 @@ async def readyz(container: AppContainer = Depends(get_container)):
 
 
 @router.get("/metrics", response_class=PlainTextResponse)
-async def prometheus_metrics(container: AppContainer = Depends(get_container)) -> PlainTextResponse:
+async def prometheus_metrics(
+    request: Request,
+    container: AppContainer = Depends(get_container),
+) -> PlainTextResponse:
     if not container.settings.metrics_enabled:
         return PlainTextResponse("metrics disabled\n", status_code=404)
+    # Metrics expose operational volume; require a token when one is configured
+    # so the endpoint can be scraped by Prometheus without being world-readable.
+    expected = container.settings.metrics_token
+    if expected:
+        provided = request.headers.get("x-metrics-token") or request.headers.get("authorization", "")
+        provided = provided.removeprefix("Bearer ").strip()
+        if provided != expected:
+            return PlainTextResponse("forbidden\n", status_code=403)
     return PlainTextResponse(metrics.render(), media_type="text/plain; version=0.0.4")

@@ -130,6 +130,7 @@ def run_row_to_model(row: RunRow) -> RunRecord:
         approval_id=row.approval_id,
         usage=dict(row.usage or {}),
         langfuse_url=row.langfuse_url,
+        idempotency_key=row.idempotency_key,
         created_at=ensure_utc(row.created_at) or utcnow(),
         updated_at=ensure_utc(row.updated_at) or utcnow(),
         completed_at=ensure_utc(row.completed_at),
@@ -331,13 +332,29 @@ class RunRepository:
                 approval_id=run.approval_id,
                 usage=run.usage,
                 langfuse_url=run.langfuse_url,
+                idempotency_key=run.idempotency_key,
             )
         )
-        await self.session.flush()
+        try:
+            await self.session.flush()
+        except IntegrityError as exc:
+            await self.session.rollback()
+            raise ConflictError(
+                "A run with this idempotency key already exists for this user.",
+                details=str(exc.orig),
+            ) from exc
         return run
 
     async def get(self, run_id: str) -> RunRecord | None:
         row = await self.session.get(RunRow, run_id)
+        return run_row_to_model(row) if row else None
+
+    async def find_by_idempotency(self, *, user_id: str, idempotency_key: str) -> RunRecord | None:
+        stmt = select(RunRow).where(
+            RunRow.user_id == user_id,
+            RunRow.idempotency_key == idempotency_key,
+        )
+        row = (await self.session.execute(stmt)).scalars().first()
         return run_row_to_model(row) if row else None
 
     async def get_or_raise(self, run_id: str) -> RunRecord:

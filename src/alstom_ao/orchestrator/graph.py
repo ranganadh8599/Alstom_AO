@@ -106,4 +106,10 @@ async def checkpointer_for(settings: Settings) -> AsyncIterator[Any]:
                 "Install 'langgraph-checkpoint-postgres' and 'psycopg[binary]' for restart-safe pauses.",
                 exc,
             )
+    if settings.is_production:
+        logger.error(
+            "Using MemorySaver in a production environment: paused runs will NOT survive a restart. "
+            "Run on Postgres with the 'postgres' extra installed, or expose the pause through an external "
+            "workflow engine."
+        )
     yield MemorySaver()

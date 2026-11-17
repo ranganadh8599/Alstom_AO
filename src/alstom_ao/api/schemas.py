@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from alstom_ao.domain.enums import ActionType, RiskLevel
 from alstom_ao.domain.models import AgentCard, ApprovalRequest, PolicyDecision, RunResult
+from alstom_ao.errors import InputValidationError
 
 
 class ConversationTurn(BaseModel):
@@ -21,12 +22,31 @@ class OrchestrateRequest(BaseModel):
     query: str = Field(min_length=1, max_length=6000)
     environment: str | None = None
     use_case: str | None = Field(default=None, max_length=128)
-    conversation: list[ConversationTurn] = Field(default_factory=list)
+    conversation: list[ConversationTurn] = Field(default_factory=list, max_length=40)
 
     @field_validator("query", mode="before")
     @classmethod
     def _strip(cls, value: object) -> object:
         return value.strip() if isinstance(value, str) else value
+
+
+def validate_idempotency_key(value: str | None) -> str | None:
+    """Bound the header before it reaches the database.
+
+    A 128-char column with a unique constraint means an oversized or malformed key
+    would surface as a 500 on Postgres. Reject it as a client error instead.
+    """
+
+    if value is None:
+        return None
+    key = value.strip()
+    if not key:
+        return None
+    if len(key) > 128:
+        raise InputValidationError("Idempotency-Key must be 128 characters or fewer.")
+    if not key.isprintable():
+        raise InputValidationError("Idempotency-Key must contain printable characters only.")
+    return key
 
 
 class OrchestrateResponse(BaseModel):

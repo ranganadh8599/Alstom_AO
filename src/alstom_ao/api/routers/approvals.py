@@ -12,6 +12,7 @@ from alstom_ao.api.deps import AppContainer, get_container, get_identity, get_ru
 from alstom_ao.api.schemas import ApprovalDecisionRequest, ApprovalDecisionResponse
 from alstom_ao.domain.models import ApprovalRequest, IdentityContext
 from alstom_ao.orchestrator.service import RunService
+from alstom_ao.security.access import require_approval_access
 
 router = APIRouter(prefix="/v1/approvals", tags=["approvals"])
 
@@ -20,22 +21,24 @@ router = APIRouter(prefix="/v1/approvals", tags=["approvals"])
 async def list_approvals(
     status_filter: str = Query(default="pending", alias="status"),
     limit: int = Query(default=100, ge=1, le=500),
+    identity: IdentityContext = Depends(get_identity),
     container: AppContainer = Depends(get_container),
-    _: IdentityContext = Depends(get_identity),
 ) -> dict:
     if status_filter != "pending":
         return {"items": [], "total": 0, "note": "only 'pending' is supported"}
-    items = await container.approvals.list_pending(limit=limit)
+    items = await container.approvals.list_pending(identity=identity, limit=limit)
     return {"items": [item.model_dump(mode="json") for item in items], "total": len(items)}
 
 
 @router.get("/{approval_id}", response_model=ApprovalRequest)
 async def get_approval(
     approval_id: str,
+    identity: IdentityContext = Depends(get_identity),
     container: AppContainer = Depends(get_container),
-    _: IdentityContext = Depends(get_identity),
 ) -> ApprovalRequest:
-    return await container.approvals.get(approval_id)
+    approval = await container.approvals.get(approval_id)
+    require_approval_access(approval, identity, container.settings)
+    return approval
 
 
 @router.post("/{approval_id}/decision", response_model=ApprovalDecisionResponse)
@@ -46,17 +49,23 @@ async def decide_approval(
     container: AppContainer = Depends(get_container),
     run_service: RunService = Depends(get_run_service),
 ) -> ApprovalDecisionResponse:
+    # Validate the paused workflow *before* recording a decision, so a lost
+    # in-memory checkpoint cannot leave an approved-but-never-executed run.
+    pending = await container.approvals.get(approval_id)
+    require_approval_access(pending, identity, container.settings)
+    await run_service.ensure_resumable(pending.run_id)
+
     approval = await container.approvals.decide(
         approval_id,
         approved=payload.approved,
         actor=identity,
         note=payload.note,
     )
-    run = await run_service.resume(
+    run_result = await run_service.resume(
         run_id=approval.run_id,
         approved=payload.approved,
         actor=identity,
         note=payload.note,
     )
     refreshed = await container.approvals.get(approval_id)
-    return ApprovalDecisionResponse(approval=refreshed, run=run)
+    return ApprovalDecisionResponse(approval=refreshed, run=run_result)

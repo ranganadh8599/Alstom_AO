@@ -44,7 +44,7 @@ async def list_agents(
     container: AppContainer = Depends(get_container),
     _: IdentityContext = Depends(get_identity),
 ) -> AgentListResponse:
-    items = await container.registry.list(
+    items = await container.registry.list_cards(
         environment=environment,
         status=status_filter,
         protocol=protocol,

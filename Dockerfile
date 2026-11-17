@@ -17,6 +17,11 @@ RUN pip install --no-cache-dir ".[postgres]"
 
 COPY . .
 
+# Run unprivileged: the service needs no write access to the image filesystem.
+RUN useradd --create-home --uid 10001 appuser \
+    && chown -R appuser:appuser /app
+USER appuser
+
 EXPOSE 8080
 HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=3 \
     CMD curl -fsS http://localhost:8080/healthz || exit 1

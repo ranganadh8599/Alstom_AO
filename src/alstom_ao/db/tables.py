@@ -75,7 +75,14 @@ class RunRow(TimestampMixin, Base):
     approval_id: Mapped[str | None] = mapped_column(String(64), index=True)
     usage: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     langfuse_url: Mapped[str | None] = mapped_column(String(500))
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), index=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        # A caller may retry a submission; the same key must never start a second
+        # run (and therefore never re-execute an approved side effect).
+        UniqueConstraint("user_id", "idempotency_key", name="uq_runs_user_idempotency"),
+    )
 
 
 class TraceEventRow(Base):

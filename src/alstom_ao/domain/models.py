@@ -392,6 +392,7 @@ class RunRecord(BaseModel):
     approval_id: str | None = None
     usage: dict[str, Any] = Field(default_factory=dict)
     langfuse_url: str | None = None
+    idempotency_key: str | None = None
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
     completed_at: datetime | None = None

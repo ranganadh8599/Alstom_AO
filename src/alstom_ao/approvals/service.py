@@ -135,6 +135,7 @@ class ApprovalService:
                     "query": query[:2000],
                     "requested_by": identity.user.user_id,
                     "requested_by_email": identity.user.email,
+                    "tenant_id": identity.user.tenant_id,
                     "use_case": plan.use_case,
                     "agents": [
                         {
@@ -159,14 +160,29 @@ class ApprovalService:
         async with self.database.session() as session:
             return await ApprovalRepository(session).get_by_run(run_id)
 
-    async def list_pending(self, *, limit: int = 100) -> list[ApprovalRequest]:
+    async def list_pending(
+        self,
+        *,
+        identity: IdentityContext | None = None,
+        limit: int = 100,
+    ) -> list[ApprovalRequest]:
         async with self.database.session() as session:
             repository = ApprovalRepository(session)
             pending = await repository.list_pending(limit=limit)
             for request in pending:
                 if is_expired(request.expires_at):
                     await repository.expire(request.approval_id)
-        return [request for request in pending if not is_expired(request.expires_at)]
+        active = [request for request in pending if not is_expired(request.expires_at)]
+        if identity is None:
+            return active
+        # Only queue items the caller may actually act on.
+        from alstom_ao.security.access import can_view_approval
+
+        return [
+            request
+            for request in active
+            if can_view_approval(request, identity, self.settings)
+        ]
 
     async def decide(
         self,

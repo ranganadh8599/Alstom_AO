@@ -36,7 +36,21 @@ async def initialize_app(app: FastAPI) -> None:
     container = app.state.container
     settings: Settings = container.settings
 
+    # Production guard: demo cards point at localhost:9101 and would let the
+    # planner route real traffic to a non-existent service. Refuse to start
+    # rather than silently register fake agents.
+    if settings.is_production and settings.seed_demo_agents:
+        raise RuntimeError(
+            "Refusing to start: AO_SEED_DEMO_AGENTS is enabled in a production environment. "
+            "Demo agent cards point at local development endpoints. Set AO_SEED_DEMO_AGENTS=false."
+        )
+
     if settings.db_auto_create:
+        if settings.is_production:
+            logger.warning(
+                "AO_DB_AUTO_CREATE is enabled in production. Prefer 'alembic upgrade head' so schema "
+                "changes are versioned and reversible."
+            )
         await container.database.create_all()
     if settings.seed_demo_agents:
         created = await seed_demo_agents(container.registry, settings)

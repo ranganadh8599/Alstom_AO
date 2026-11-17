@@ -37,7 +37,9 @@ from alstom_ao.domain.models import (
 from alstom_ao.errors import AppError, BudgetExceededError
 from alstom_ao.llm.gateway import BudgetDecision, BudgetState
 from alstom_ao.llm.grounding import apply_grounding, check_agent_consistency, check_grounding, repair_prompt
+from alstom_ao.llm.guardrails import apply_input_guards, apply_output_guards
 from alstom_ao.llm.prompts import SYNTHESIZER_SYSTEM, build_synthesizer_user_prompt
+from alstom_ao.llm.schema_check import validate_output
 from alstom_ao.observability.alerts import emit_alert
 from alstom_ao.observability.metrics import metrics
 from alstom_ao.orchestrator.runtime import RunRuntime, runtime_from
@@ -68,8 +70,7 @@ ALL_FAILED_TEMPLATE = (
     "I couldn't complete the request. {count} agent(s) were selected but none returned a usable answer{detail}. "
     "Please try again later or contact the platform team if this persists."
 )
-BUDGET_MESSAGE = (
-    "This request exceeded the orchestration budget (model calls, tokens or agent hops). "
+BUDGET_MESSAGE = (    "This request exceeded the orchestration budget (model calls, tokens or agent hops). "
     "No further agents were called. Please narrow the request or ask the platform team to raise the limit."
 )
 HOP_LIMIT_TEMPLATE = (
@@ -81,6 +82,14 @@ BUDGET_PARTIAL_NOTE = (
     "\n\n> Budget note: this answer was assembled from completed agent results without the final "
     "model synthesis, because the run reached its {dimension} limit. Results are complete; wording "
     "is not polished."
+)
+GUARDRAIL_BLOCK_TEMPLATE = (
+    "This request was blocked by a content guardrail: {findings}. "
+    "Nothing was sent to any agent. If this is a false positive, contact the platform team."
+)
+SCHEMA_REJECT_TEMPLATE = (
+    "The agent's response did not match its declared contract ({agent_id}), so it was not used. "
+    "This is a defect in the agent, not in your request."
 )
 
 
@@ -145,22 +154,52 @@ async def _apply_soft_tier(
 
 async def validate_node(state: OrchestratorState, config: RunnableConfig) -> dict[str, Any]:
     runtime = runtime_from(config)
+    settings = _settings(runtime)
     query = (state.get("query") or "").strip()
-    await runtime.tracer.record(
-        TraceAction.INPUT_VALIDATED,
-        TraceStatus.SUCCEEDED,
-        input={"query_length": len(query), "environment": state.get("environment")},
-    )
 
+    max_chars = settings.max_query_chars
     if not query:
+        await runtime.tracer.record(
+            TraceAction.INPUT_VALIDATED, TraceStatus.SUCCEEDED, input={"query_length": 0, "environment": state.get("environment")}
+        )
         return {"status": str(RunStatus.INVALID), "response": EMPTY_QUERY_MESSAGE, "error": "empty_query"}
-    max_chars = _settings(runtime).max_query_chars
     if len(query) > max_chars:
+        await runtime.tracer.record(TraceAction.INPUT_VALIDATED, TraceStatus.FAILED, error="query_too_long")
         return {
             "status": str(RunStatus.INVALID),
             "response": f"Your request is too long ({len(query)} characters). Please shorten it to {max_chars} characters or fewer.",
             "error": "query_too_long",
         }
+
+    # Untrusted text enters here. Guardrails are reported always; only "block" mode
+    # (and only blocking categories) stops the request.
+    report, blocked = apply_input_guards(query, settings.guardrails_mode)
+    if not report.ok:
+        metrics.incr("ao.guardrails.input_flagged")
+        await runtime.tracer.record(
+            TraceAction.GUARDRAIL_TRIGGERED,
+            TraceStatus.DENIED if blocked else TraceStatus.SUCCEEDED,
+            output={
+                "phase": "input",
+                "mode": settings.guardrails_mode,
+                "blocked": blocked,
+                "findings": [finding.describe() for finding in report.findings],
+            },
+        )
+    if blocked:
+        metrics.incr("ao.guardrails.input_blocked")
+        return {
+            "status": str(RunStatus.INVALID),
+            "response": GUARDRAIL_BLOCK_TEMPLATE.format(findings=report.describe()),
+            "error": "guardrail_blocked",
+        }
+
+    await runtime.tracer.record(
+        TraceAction.INPUT_VALIDATED,
+        TraceStatus.SUCCEEDED,
+        input={"query_length": len(query), "environment": state.get("environment")},
+        output={"guardrails": report.describe()},
+    )
     return {"query": query, "status": str(RunStatus.PLANNING)}
 
 
@@ -572,6 +611,29 @@ async def execute_node(state: OrchestratorState, config: RunnableConfig) -> dict
                 )
 
         if result.succeeded:
+            # The card promised an output contract; verify the agent honoured it.
+            verdict = validate_output(
+                output_schema=card.output_schema,
+                text=result.text,
+                structured=result.structured or None,
+            )
+            if verdict.status == "invalid":
+                metrics.incr("ao.agents.schema_violation")
+                await runtime.tracer.record(
+                    TraceAction.AGENT_SCHEMA_VIOLATION,
+                    TraceStatus.FAILED if settings.output_schema_mode == "enforce" else TraceStatus.SUCCEEDED,
+                    agent_id=card.agent_id,
+                    agent_version=card.version,
+                    protocol=str(card.protocol),
+                    output={"status": verdict.status, "errors": verdict.errors, "mode": settings.output_schema_mode},
+                )
+                if settings.output_schema_mode == "enforce":
+                    return None, {
+                        "agent_id": card.agent_id,
+                        "agent_name": card.name,
+                        "error": SCHEMA_REJECT_TEMPLATE.format(agent_id=card.agent_id),
+                    }
+
             await runtime.tracer.record(
                 TraceAction.AGENT_COMPLETED,
                 TraceStatus.SUCCEEDED,
@@ -579,7 +641,7 @@ async def execute_node(state: OrchestratorState, config: RunnableConfig) -> dict
                 agent_version=card.version,
                 protocol=str(card.protocol),
                 input={"action": str(planned.action)},
-                output={"text": result.text[:4000], "artifacts": result.artifacts},
+                output={"text": result.text[:4000], "artifacts": result.artifacts, "schema": verdict.status},
                 latency_ms=result.latency_ms,
                 retry_count=result.retry_count,
             )
@@ -789,6 +851,20 @@ async def synthesize_node(state: OrchestratorState, config: RunnableConfig) -> d
                 + "."
             )
         response += budget_note
+
+        # Outgoing text: mask anything that must not leave the platform.
+        response, output_guard = apply_output_guards(response, runtime.services.settings.guardrails_mode)
+        if not output_guard.ok:
+            metrics.incr("ao.guardrails.output_flagged")
+            await runtime.tracer.record(
+                TraceAction.GUARDRAIL_TRIGGERED,
+                TraceStatus.SUCCEEDED,
+                output={
+                    "phase": "output",
+                    "mode": runtime.services.settings.guardrails_mode,
+                    "findings": [finding.describe() for finding in output_guard.findings],
+                },
+            )
         observation.update(
             output={
                 "response": response[:2000],

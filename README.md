@@ -49,6 +49,9 @@ consequential**, and traces every hop to **Langfuse** with dual identity.
 | Idempotent submissions | `Idempotency-Key` header: a retried POST returns the first run, never re-executes |
 | Tiered budgets | soft alert at 80% → model downgrade → hard gate that still returns collected agent results; details in [docs/budgets.md](docs/budgets.md) |
 | Numeric grounding | every figure in the synthesized answer must appear in an agent result or the question; `off`/`warn`/`strict` |
+| Content guardrails | prompt-injection and secret-request blocked; PII/profanity reported or masked; `off`/`warn`/`block` |
+| Output contracts | agent results validated against the card's `output_schema`; `off`/`warn`/`enforce` |
+| Evaluation | golden routing set: `python -m evals.run_golden` (offline) or `--base-url` (live) |
 | Loop protection | per-run agent-hop cap and inbound A2A depth cap, independent of spend |
 | Trace retention | `scripts/prune_trace_events.py` with dry-run, batching and stats |
 | Virtual model | OpenAI-compatible `/v1/chat/completions` (streaming and non-streaming) |

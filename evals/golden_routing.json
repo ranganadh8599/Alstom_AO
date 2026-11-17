@@ -1,0 +1,125 @@
+{
+  "_comment": "Golden routing set. 'mode' says when a case applies: 'mock' runs against the deterministic heuristic, 'real' needs an LLM planner, 'both' means either. 'must_not' catches known regressions.",
+  "cases": [
+    {
+      "id": "invoice-duplicate",
+      "query": "Check invoice INV-2024-0912 for duplicate charges",
+      "expect_agents": ["finance-invoice-auditor"],
+      "must_not": ["hr-policy-advisor", "it-service-desk"],
+      "mode": "both"
+    },
+    {
+      "id": "invoice-po-match",
+      "query": "Does vendor invoice INV-2024-0777 match purchase order PO-7781?",
+      "expect_agents": ["finance-invoice-auditor"],
+      "mode": "both"
+    },
+    {
+      "id": "payment-status",
+      "query": "What is the payment status of supplier Schneider Electric?",
+      "expect_agents": ["finance-invoice-auditor"],
+      "mode": "both"
+    },
+    {
+      "id": "duplicate-double-charge",
+      "query": "We were billed twice for the same line item, can you find the double charge?",
+      "expect_agents": ["finance-invoice-auditor"],
+      "mode": "real"
+    },
+    {
+      "id": "leave-entitlement",
+      "query": "How many days of annual leave do I get after three years?",
+      "expect_agents": ["hr-policy-advisor"],
+      "must_not": ["finance-invoice-auditor"],
+      "mode": "both"
+    },
+    {
+      "id": "leave-short",
+      "query": "How much holiday do I have left this year?",
+      "expect_agents": ["hr-policy-advisor"],
+      "mode": "real"
+    },
+    {
+      "id": "travel-policy",
+      "query": "What is the travel policy for economy class in Europe?",
+      "expect_agents": ["hr-policy-advisor"],
+      "mode": "both"
+    },
+    {
+      "id": "remote-work",
+      "query": "Can I work remotely from another country for two weeks?",
+      "expect_agents": ["hr-policy-advisor"],
+      "mode": "both"
+    },
+    {
+      "id": "vpn-mac",
+      "query": "How do I connect to the VPN from a Mac?",
+      "expect_agents": ["it-service-desk"],
+      "must_not": ["finance-invoice-auditor"],
+      "mode": "both"
+    },
+    {
+      "id": "laptop-slow",
+      "query": "My laptop is very slow, what should I do?",
+      "expect_agents": ["it-service-desk"],
+      "mode": "real"
+    },
+    {
+      "id": "software-install",
+      "query": "Which software can I install without raising a ticket?",
+      "expect_agents": ["it-service-desk"],
+      "mode": "both"
+    },
+    {
+      "id": "no-match-poem",
+      "query": "Write me a poem about the sea",
+      "expect_agents": [],
+      "expect_status": "no_match",
+      "mode": "both"
+    },
+    {
+      "id": "no-match-physics",
+      "query": "What is the airspeed velocity of an unladen swallow?",
+      "expect_agents": [],
+      "expect_status": "no_match",
+      "mode": "both"
+    },
+    {
+      "id": "no-match-weather",
+      "query": "Will it rain in Paris tomorrow?",
+      "expect_agents": [],
+      "expect_status": "no_match",
+      "mode": "real"
+    },
+    {
+      "id": "write-needs-approval",
+      "query": "Create an adjustment task for invoice INV-2024-0912",
+      "expect_agents": ["finance-invoice-auditor"],
+      "expect_status": "awaiting_approval",
+      "mode": "both",
+      "note": "write action on a high-risk agent must pause"
+    },
+    {
+      "id": "read-no-approval",
+      "query": "Check invoice INV-2024-0912 for duplicate charges",
+      "expect_agents": ["finance-invoice-auditor"],
+      "expect_status": "completed",
+      "mode": "both",
+      "note": "read on the same high-risk agent must not pause"
+    },
+    {
+      "id": "ambiguous-both",
+      "query": "I need help with my holiday entitlement and also my VPN access",
+      "expect_agents": ["hr-policy-advisor", "it-service-desk"],
+      "mode": "real",
+      "note": "multi-agent composition"
+    }
+  ],
+  "failure_taxonomy": {
+    "routing_miss": "an expected agent was not selected",
+    "routing_extra": "an agent was selected that should not be",
+    "false_no_match": "no_match returned although an agent could answer",
+    "missed_no_match": "agents selected for a question nothing can answer",
+    "wrong_status": "run status differs from expectation"
+  }
+}

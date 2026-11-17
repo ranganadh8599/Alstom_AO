@@ -68,6 +68,9 @@ class Settings(BaseSettings):
     guardrails_mode: str = "warn"
     # Agent output validated against its card's output_schema: off | warn | enforce.
     output_schema_mode: str = "warn"
+    # Allow `$ref` values that point outside the schema document. Off by default:
+    # resolving them would make a validation verdict depend on a network fetch.
+    allow_remote_schema_refs: bool = False
     planner_min_confidence: float = 0.35
     planner_max_agents: int = 4
 

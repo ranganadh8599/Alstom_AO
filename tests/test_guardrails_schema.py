@@ -253,3 +253,88 @@ async def test_schema_warn_keeps_result(make_app, user_headers, admin_headers, a
     trace = await client.get(f"/v1/runs/{response.json()['run']['run_id']}/trace", headers=user_headers)
     await client.aclose()
     assert any(event["action"] == "agent.schema_violation" for event in trace.json()["events"])
+# ---------------------------------------------------------------------------
+# registration-time schema gate
+# ---------------------------------------------------------------------------
+
+
+def test_local_ref_is_accepted():
+    from alstom_ao.llm.schema_check import validate_schema_definition
+
+    schema = {
+        "type": "object",
+        "properties": {"answer": {"$ref": "#/$defs/text"}},
+        "$defs": {"text": {"type": "string"}},
+    }
+    assert validate_schema_definition(schema).status == "valid"
+
+
+def test_remote_ref_is_rejected():
+    from alstom_ao.llm.schema_check import validate_schema_definition
+
+    schema = {"$ref": "https://schemas.example.com/answer.json"}
+    verdict = validate_schema_definition(schema)
+    assert verdict.status == "schema_invalid"
+    assert "external $ref" in verdict.errors[0]
+
+
+def test_relative_ref_is_rejected():
+    from alstom_ao.llm.schema_check import validate_schema_definition
+
+    verdict = validate_schema_definition({"properties": {"a": {"$ref": "other.json#/defs/x"}}})
+    assert verdict.status == "schema_invalid"
+
+
+def test_nested_remote_ref_is_found():
+    from alstom_ao.llm.schema_check import find_external_refs
+
+    schema = {"properties": {"items": {"items": {"$dynamicRef": "https://x/y.json"}}}}
+    assert find_external_refs(schema)
+
+
+def test_remote_refs_can_be_allowed_explicitly():
+    from alstom_ao.llm.schema_check import validate_schema_definition
+
+    schema = {"$ref": "https://schemas.example.com/answer.json"}
+    # The schema is well-formed; only the network-dependency rule rejects it.
+    assert validate_schema_definition(schema, allow_remote_refs=True).status == "valid"
+
+
+def test_runtime_validation_refuses_remote_refs():
+    from alstom_ao.llm.schema_check import validate_output
+
+    verdict = validate_output(
+        output_schema={"$ref": "https://schemas.example.com/a.json"},
+        text="",
+        structured={"answer": "x"},
+    )
+    assert verdict.status == "schema_invalid"
+
+
+async def test_registration_rejects_remote_ref_with_422(client, admin_headers):
+    payload = agent_payload("remote-ref-agent")
+    payload["output_schema"] = {"$ref": "https://schemas.example.com/answer.json"}
+    response = await client.post("/v1/agents", json=payload, headers=admin_headers)
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "invalid_input"
+    assert "external $ref" in response.json()["error"]["message"]
+
+
+async def test_registration_rejects_malformed_schema(client, admin_headers):
+    payload = agent_payload("bad-schema-agent")
+    payload["output_schema"] = {"type": "not-a-real-type"}
+    response = await client.post("/v1/agents", json=payload, headers=admin_headers)
+    assert response.status_code == 422
+    assert "output_schema" in response.json()["error"]["message"]
+
+
+async def test_registration_accepts_valid_local_schema(client, admin_headers):
+    payload = agent_payload("good-schema-agent")
+    payload["output_schema"] = {
+        "type": "object",
+        "properties": {"answer": {"$ref": "#/$defs/text"}},
+        "$defs": {"text": {"type": "string"}},
+        "required": ["answer"],
+    }
+    response = await client.post("/v1/agents", json=payload, headers=admin_headers)
+    assert response.status_code == 201, response.text

@@ -18,6 +18,7 @@ from alstom_ao.db.session import Database
 from alstom_ao.domain.enums import AgentHealth, AgentStatus, RiskLevel
 from alstom_ao.domain.models import AgentCard, AgentCardCreate, AgentPermissions
 from alstom_ao.errors import InputValidationError, NotFoundError
+from alstom_ao.llm.schema_check import validate_schema_definition
 
 
 def slugify(value: str) -> str:
@@ -31,6 +32,7 @@ class AgentRegistryService:
         self.settings = settings
 
     async def register(self, payload: AgentCardCreate) -> AgentCard:
+        self._check_schema(payload)
         try:
             card = AgentCard(**payload.model_dump())
         except ValidationError as exc:
@@ -39,12 +41,31 @@ class AgentRegistryService:
             return await AgentRepository(session).create(card)
 
     async def upsert(self, payload: AgentCardCreate) -> tuple[AgentCard, bool]:
+        self._check_schema(payload)
         try:
             card = AgentCard(**payload.model_dump())
         except ValidationError as exc:
             raise InputValidationError("The agent card is not valid.", details=exc.errors()) from exc
         async with self.database.session() as session:
             return await AgentRepository(session).upsert(card)
+
+    def _check_schema(self, payload: AgentCardCreate) -> None:
+        """Reject a bad ``output_schema`` when the card is submitted.
+
+        Doing this at registration is the whole point: the administrator gets one
+        clear error, and runtime validation never has to resolve a remote ``$ref``
+        (which would make the result depend on a network fetch).
+        """
+
+        verdict = validate_schema_definition(
+            payload.output_schema,
+            allow_remote_refs=self.settings.allow_remote_schema_refs,
+        )
+        if verdict.status == "schema_invalid":
+            raise InputValidationError(
+                "output_schema is not valid: " + "; ".join(verdict.errors[:3]),
+                details={"errors": verdict.errors},
+            )
 
     async def get(self, agent_id: str) -> AgentCard:
         async with self.database.session() as session:

@@ -10,7 +10,7 @@ Motivation per repo:
 | `nod` | `urlsGrounded()` eval check; failure taxonomy; `amounts()` normalization | Golden-set harness + failure taxonomy |
 | `multi-agent-orchestator` | Guardrails AI `DetectPII`/`DetectJailbreak`/`ProfanityFree` | Local equivalents (no hub account needed) |
 | `langgraph-complete-guide` | hardcoded `301`/`303` hallucination check | Rejected — not generalizable |
-| `OPA` | `json.verify_schema` builtin | Not used; `jsonschema` in-process instead (see below) |
+| `OPA` | `json.verify_schema` / `json.match_schema` builtins | Declined; `jsonschema` in-process (see below) |
 
 ---
 
@@ -48,12 +48,50 @@ layer that must start on-prem cannot depend on that. The module keeps the same
 shape (`check_input` / `check_output` returning findings), so a hub validator can
 replace either function without touching the graph.
 
-### Why not OPA's `json.verify_schema`
+### Why not OPA's JSON-Schema builtins
 
-Attractive — the policy service is already called per agent — but it would put
-payload-shaped data into every authorization request and require the schema to be
-loaded as Rego data. Validating in-process keeps schemas with the card and works
-when OPA is unreachable.
+OPA ships two, and they do different things:
+
+| Builtin | Takes | Answers |
+|---|---|---|
+| `json.verify_schema(schema)` | a schema | "is this schema itself well-formed?" |
+| `json.match_schema(document, schema)` | document + schema | "does this document conform?" |
+
+`json.match_schema` is the one that could enforce an `output_schema`. It was
+considered and declined, for four verified reasons:
+
+1. **It compiles on every call.** `newPatternValidatingSchemaLoader()` builds a
+   fresh `gojsonschema.SchemaLoader` per evaluation; the builtins never pre-load
+   schemas into the loader's cache (`AddSchema`, Go API only). So "compile once,
+   match in microseconds" is not what happens — the schema is recompiled each time.
+2. **The ordering is wrong.** Authorization runs *before* an agent is invoked;
+   output validation can only run *after* it returns. Using OPA would mean a second
+   network hop per agent, in the hot path, purely to validate — not one call that
+   does both.
+3. **Regex dialect drift.** The builtins force `ValidatePatterns = true` with Go's
+   RE2, which rejects ECMA-262 constructs (e.g. negative lookahead) that
+   `jsonschema` accepts. A schema valid in one place would fail in the other.
+4. **Remote `$ref` is a network dependency.** OPA dereferences refs at evaluation
+   time (`Nondeterministic: true`) and restricts fetching to the `allow_net`
+   capability. A schema with an external ref would make a validation verdict depend
+   on what a remote URL serves.
+
+The split we use instead: **Python decides shape, OPA decides permission.**
+
+### Hardening taken from this review
+
+Two recommendations were adopted:
+
+- **External `$ref` is rejected at registration** (`AO_ALLOW_REMOTE_SCHEMA_REFS=false`).
+  Local pointers (`#/$defs/X`) are fine; anything needing a fetch returns 422 with
+  the offending refs. Runtime validation re-checks, because cards can be written
+  straight to the database.
+- **Draft is pinned** to `Draft202012Validator` in one module, so there is a single
+  place that defines the schema dialect.
+
+What was *not* adopted: pushing schemas into OPA as static data and matching there.
+That reintroduces the second hop and the dialect drift, and adds a second copy of
+every schema to keep in sync — for a check that takes microseconds in-process.
 
 ---
 

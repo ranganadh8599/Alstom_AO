@@ -219,3 +219,99 @@ async def test_policy_denies_agent_in_enforce_mode(client, user_headers, admin_h
     assert decisions.status_code == 200
     assert decisions.json()["decisions"][0]["allowed"] is False
     assert "service_scope_missing" in decisions.json()["decisions"][0]["reasons"]
+# Multi-intent queries must fan out to every agent that owns part of the answer.
+# ---------------------------------------------------------------------------
+
+
+def _assessment_unused():  # keeps the module import order stable for the new block
+    return None
+
+
+MULTI = "I need help with my holiday entitlement and also my VPN access on a Mac"
+THREE = (
+    "How many days annual leave do I get after three years, what is the VPN setup for Mac, "
+    "and are there duplicate charges on invoice INV-2024-0912?"
+)
+
+
+async def _seed_three(client, admin_headers):
+    from tests.conftest import agent_payload
+
+    spec = {
+        "hr-policy-advisor": dict(
+            endpoint="http://test/agents/hr",
+            capabilities=["leave and absence rules", "hr policy lookup"],
+            tags=["hr", "leave"],
+            examples=["How many days of annual leave do I get?"],
+        ),
+        "it-service-desk": dict(
+            endpoint="http://test/agents/it",
+            capabilities=["vpn troubleshooting", "laptop provisioning"],
+            tags=["it", "vpn"],
+            examples=["How do I connect to the VPN from a Mac?"],
+        ),
+        "finance-invoice-auditor": dict(
+            endpoint="http://test/agents/finance",
+            capabilities=["invoice audit", "duplicate invoice detection"],
+            tags=["finance", "invoice"],
+            examples=["Check invoice INV-1 for duplicate charges"],
+        ),
+    }
+    for agent_id, overrides in spec.items():
+        body = agent_payload(agent_id, **overrides)
+        await client.post("/v1/agents", json=body, headers=admin_headers)
+
+
+async def test_two_intents_calls_two_agents(client, admin_headers, user_headers, a2a):
+    await _seed_three(client, admin_headers)
+    response = await client.post("/v1/orchestrate", json={"query": MULTI}, headers=user_headers)
+    run = response.json()["run"]
+
+    assert run["status"] == "completed"
+    agents = [a["agent_id"] for a in run["agent_results"]]
+    assert "hr-policy-advisor" in agents
+    assert "it-service-desk" in agents
+    assert len(agents) == 2
+    # both agents were really contacted
+    assert len(a2a.calls_for("/agents/hr")) == 1
+    assert len(a2a.calls_for("/agents/it")) == 1
+
+
+async def test_three_intents_calls_three_agents(client, admin_headers, user_headers, a2a):
+    await _seed_three(client, admin_headers)
+    response = await client.post("/v1/orchestrate", json={"query": THREE}, headers=user_headers)
+    run = response.json()["run"]
+
+    assert run["status"] == "completed"
+    agents = {a["agent_id"] for a in run["agent_results"]}
+    assert agents == {"hr-policy-advisor", "it-service-desk", "finance-invoice-auditor"}
+    assert len(a2a.calls_for("/agents/hr")) == 1
+    assert len(a2a.calls_for("/agents/it")) == 1
+    assert len(a2a.calls_for("/agents/finance")) == 1
+
+
+async def test_single_intent_does_not_over_fan_out(client, admin_headers, user_headers, a2a):
+    await _seed_three(client, admin_headers)
+    response = await client.post(
+        "/v1/orchestrate", json={"query": "How do I connect to the VPN from a Mac?"}, headers=user_headers
+    )
+    agents = [a["agent_id"] for a in response.json()["run"]["agent_results"]]
+    assert agents == ["it-service-desk"]
+
+
+async def test_multi_intent_trace_records_fan_out(client, admin_headers, user_headers, a2a):
+    await _seed_three(client, admin_headers)
+    response = await client.post("/v1/orchestrate", json={"query": THREE}, headers=user_headers)
+    run = response.json()["run"]
+
+    trace = await client.get(f"/v1/runs/{run['run_id']}/trace", headers=user_headers)
+    events = trace.json()["events"]
+    actions = [e["action"] for e in events]
+    assert actions.count("agent.invoked") == 3
+    assert actions.count("agent.completed") == 3
+    assert "agents.fan_in" in actions
+
+    invoked = [e for e in events if e["action"] == "agent.invoked"]
+    first, last = invoked[0], invoked[-1]
+    assert first["input"]["previous_agents"] == []
+    assert len(last["input"]["previous_agents"]) == 2

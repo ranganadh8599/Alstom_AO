@@ -366,3 +366,48 @@ def test_numeric_fields_flattens_nested_payloads():
 
     flat = numeric_fields({"invoice": {"total": 1200.0, "lines": [{"qty": 3}]}, "paid": True})
     assert flat == {"invoice.total": 1200.0, "invoice.lines.0.qty": 3.0}
+
+def test_ordered_list_markers_are_not_quantities():
+    """A numbered answer must not look like invented figures."""
+
+    answer = (
+        "1. Annual leave: 25 days per year.\n"
+        "2. VPN: install the profile.\n"
+        "3. Duplicate check: none found."
+    )
+    assert extract_numbers(answer) == {"25"}
+
+
+def test_numbered_answer_is_not_redacted():
+    from alstom_ao.llm.grounding import apply_grounding
+
+    answer = (
+        "1. **Annual leave**: you accrue 25 days per calendar year.\n"
+        "2. **VPN**: install the profile and sign in with SSO.\n"
+    )
+    text, report, action = apply_grounding(
+        answer=answer,
+        results=["employees accrue 25 days per calendar year"],
+        query="leave and vpn",
+        mode="strict",
+        fallback="agent text",
+    )
+    assert report.ok, report.ungrounded
+    assert action is None
+    assert "1. **Annual leave**" in text and "2. **VPN**" in text
+
+
+def test_real_fabricated_figure_still_caught_inside_list():
+    from alstom_ao.llm.grounding import apply_grounding
+
+    answer = "1. Leave: 25 days per year.\n2. Total: 80 days.\n"
+    text, report, action = apply_grounding(
+        answer=answer,
+        results=["25 days per calendar year"],
+        query="leave",
+        mode="strict",
+        fallback="25 days per calendar year",
+    )
+    assert report.ungrounded == ["80"]
+    assert action == "strict_redacted"
+    assert "Total: 80" not in text

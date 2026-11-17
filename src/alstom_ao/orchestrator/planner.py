@@ -76,6 +76,26 @@ def expand(tokens: set[str]) -> set[str]:
     return expanded
 
 
+# Conjunctions that separate independent asks inside one message.
+_CLAUSE_SPLIT = re.compile(r"(?:\band\b|\balso\b|\bplus\b|\bthen\b|;|,|\?|\.|\n)", re.I)
+MIN_CLAUSE_TOKENS = 2
+
+
+def split_clauses(query: str) -> list[str]:
+    """Split a multi-intent question into independent clauses.
+
+    "holiday entitlement and also my VPN access on a Mac" -> two clauses, so each
+    can vote for its own agent. Returns the whole query when nothing separates.
+    """
+
+    clauses: list[str] = []
+    for part in _CLAUSE_SPLIT.split(query or ""):
+        text = (part or "").strip()
+        if len(tokenize(text)) >= MIN_CLAUSE_TOKENS:
+            clauses.append(text)
+    return clauses or [query or ""]
+
+
 def infer_action(query: str, card: dict[str, Any]) -> ActionType:
     """Infer the intended action, never silently downgrading a destructive intent.
 
@@ -183,6 +203,29 @@ def heuristic_plan(
     top_score = ranked[0][0]
     inclusion_floor = max(2.0, top_score * 0.35)
     ranked = [item for item in ranked if item[0] >= inclusion_floor]
+
+    # Multi-intent fallback: one question can ask two or three unrelated things
+    # ("holiday entitlement and VPN access"). Scoring the whole string lets the
+    # strongest clause dominate and drops the others, so each clause also votes
+    # for its own best agent. This is what the LLM planner does naturally; the
+    # heuristic must not be strictly worse when the model is unavailable.
+    clause_winners: dict[str, tuple[float, dict[str, Any]]] = {}
+    for clause in split_clauses(query):
+        clause_tokens = expand(set(tokenize(clause)))
+        if not clause_tokens:
+            continue
+        best: tuple[float, dict[str, Any]] | None = None
+        for card in catalog:
+            score = score_card(card, clause_tokens)
+            if score >= 2.0 and (best is None or score > best[0]):
+                best = (score, card)
+        if best and best[1]["agent_id"] not in clause_winners:
+            clause_winners[best[1]["agent_id"]] = best
+
+    merged = {card["agent_id"]: (score, card) for score, card in ranked}
+    for agent_id, (score, card) in clause_winners.items():
+        merged.setdefault(agent_id, (score, card))
+    ranked = sorted(merged.values(), key=lambda item: item[0], reverse=True)
 
     selected: list[PlannedAgent] = []
     for score, card in ranked[: settings.planner_max_agents]:

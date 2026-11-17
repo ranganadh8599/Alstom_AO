@@ -54,6 +54,11 @@ _WORD_PATTERN = re.compile(r"\b(" + "|".join(sorted(_NUMBER_WORDS, key=len, reve
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n{2,}")
 
+# Markdown/plain ordered-list markers ("1. …", "2) …") are structure, not
+# quantities. Without excluding them, a numbered answer looks like invented
+# figures and strict mode redacts the list items themselves.
+_LIST_MARKER = re.compile(r"(?m)^[ \t]*(\d{1,3})[.)](?=\s)")
+
 # Reference numbers are labels, not quantities: "policy 4.2", "section 3.1.4",
 # "clause 12", "step 2", "version 1.2", "§ 7". Without this a policy citation looks
 # like an invented figure and gets a legitimate sentence redacted.
@@ -88,8 +93,12 @@ def extract_numbers(text: str, *, include_words: bool = True) -> set[str]:
     """
 
     found: set[str] = set()
+    # Spans occupied by ordered-list markers, excluded from quantity extraction.
+    list_spans = {(match.start(1), match.end(1)) for match in _LIST_MARKER.finditer(text or "")}
     for match in _STANDALONE_NUMBER.finditer(text or ""):
         if _is_reference(text, match.start(1)):
+            continue
+        if (match.start(1), match.end(1)) in list_spans:
             continue
         raw = match.group(1).replace(",", "")
         try:

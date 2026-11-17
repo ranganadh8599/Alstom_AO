@@ -24,6 +24,8 @@ sequenceDiagram
     participant G as LangGraph
     participant R as Registry
     participant O as OPA
+    participant X as A2A adapter
+    participant W as LiteLLM agent gateway
     participant A as A2A Agent
     participant L as Langfuse/ledger
 
@@ -39,8 +41,17 @@ sequenceDiagram
         UI->>API: POST /v1/approvals/{id}/decision
         API->>G: Command(resume=…)
     end
-    G->>A: message/send (trace + identities)
-    A-->>G: task completed + artifacts
+    G->>X: invoke(card, request)
+    alt AO_A2A_ROUTING=litellm_proxy
+        X->>W: POST /a2a/{agent} JSON-RPC + virtual key
+        W->>A: message/send (upstream)
+        A-->>W: task + artifacts
+        W-->>X: normalized response
+    else AO_A2A_ROUTING=direct
+        X->>A: message/send (trace + identities)
+        A-->>X: task completed + artifacts
+    end
+    X-->>G: normalized InvocationResult
     G->>L: agent.completed, synthesis, run.completed
     G-->>API: final state
     API-->>UI: response + run_id/trace_id

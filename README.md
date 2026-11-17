@@ -55,12 +55,12 @@ consequential**, and traces every hop to **Langfuse** with dual identity.
 
 ```mermaid
 flowchart LR
-    UI["UI / chatbot<br/>X-User-* headers"] -->|OpenAI chat| API["Alstom AO API"]
+    UI["UI / chatbot<br/>X-User-* headers"] -->|"OpenAI chat<br/>/v1/chat/completions"| API["Alstom AO API"]
     API --> GRAPH["LangGraph orchestration"]
 
     subgraph GRAPH
-        V["validate"] --> P["plan<br/>(LLM + heuristic)"]
-        P --> A["authorize<br/>(OPA)"]
+        V["validate"] --> P["plan<br/>LLM + heuristic"]
+        P --> A["authorize<br/>OPA"]
         A --> G{"approval<br/>needed?"}
         G -->|yes| H["interrupt<br/>human decision"]
         G -->|no| E["execute<br/>fan-out"]
@@ -70,16 +70,23 @@ flowchart LR
 
     P -.catalog.-> REG[("agent_cards<br/>Postgres")]
     A -.input.-> OPA["OPA / Rego"]
-    E --> AD["A2A adapter"]
-    AD --> GW2{"AO_A2A_ROUTING"}
-    GW2 -->|litellm_proxy| LLM["LiteLLM agent gateway"]
-    LLM --> A1["Finance agent"]
-    LLM --> A2["HR agent"]
-    LLM --> A3["IT agent"]
-    GW2 -->|direct| A1
+    P -.planning.-> LG["LiteLLM gateway<br/>(LLM: plan + synth)"]
+    S -.synthesis.-> LG
+
+    E --> AD["A2A adapter<br/>JSON-RPC 2.0"]
+    AD --> ROUTE{"AO_A2A_ROUTING"}
+    ROUTE -->|litellm_proxy| GW["LiteLLM agent gateway<br/>/a2a/{agent}"]
+    ROUTE -->|direct| AGENTS
+    GW --> AGENTS
+
+    subgraph AGENTS["Registered A2A agents"]
+        A1["Finance"]
+        A2["HR"]
+        A3["IT"]
+    end
+
     GRAPH -.spans.-> LF["Langfuse"]
-    GRAPH -.ledger.-> TR[("runs / trace_events /<br/>approvals / policy_decisions")]
-    GRAPH --> GW["LiteLLM gateway (LLM)"]
+    GRAPH -."append-only ledger".-> TR[("runs / trace_events /<br/>approvals / policy_decisions")]
 ```
 
 **Guarantees**

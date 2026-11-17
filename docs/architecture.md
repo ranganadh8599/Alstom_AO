@@ -78,6 +78,34 @@ on resume from the persisted run.
 | `failed` | All agents failed, or an internal/LLM failure |
 | `timeout` | Run exceeded `AO_RUN_TIMEOUT_SECONDS` |
 
+## Numeric grounding
+
+Prompt rules alone do not stop the synthesizer from doing arithmetic. In a live
+run it turned "25 days per calendar year" plus "5 days after three years" into
+"a total of **80 days**" — a number no agent ever reported.
+
+So every generated answer is verified deterministically before it reaches the
+user: each standalone number must already appear in an agent result, in the
+agent's structured output, or in the question itself.
+
+| Mode | `AO_SYNTHESIS_GROUNDING` | Behaviour |
+|---|---|---|
+| off | `off` | no check |
+| warn | `warn` (default) | answer kept, caveat lists the ungrounded figures |
+| strict | `strict` | answer replaced by verbatim agent output plus a reason |
+
+Every ungrounded figure also emits `synthesis.ungrounded` with the grounded and
+ungrounded sets, so drift is visible in the ledger and in metrics
+(`ao.synthesis.ungrounded`).
+
+What is deliberately *not* flagged: bare years (1900–2100, prose not quantity) and
+anything inside an identifier (`INV-2024-0912`, `v2.3.0`, `PO-7781`, `2024-Q3`).
+Matching is literal, so a model restating `4%` as `4.0%` would be flagged in
+`strict` mode — that is the trade-off for a check that cannot invent.
+
+The synthesizer prompt also gained explicit no-arithmetic and quote-verbatim
+rules, but those are defence in depth: the verifier is what makes the guarantee.
+
 ## Failure isolation
 
 | Failure | Behavior |

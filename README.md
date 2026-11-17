@@ -48,6 +48,7 @@ consequential**, and traces every hop to **Langfuse** with dual identity.
 | Access control | Runs/approvals are owner-scoped; approvers are tenant-scoped; platform admins global |
 | Idempotent submissions | `Idempotency-Key` header: a retried POST returns the first run, never re-executes |
 | Tiered budgets | soft alert at 80% → model downgrade → hard gate that still returns collected agent results; details in [docs/budgets.md](docs/budgets.md) |
+| Numeric grounding | every figure in the synthesized answer must appear in an agent result or the question; `off`/`warn`/`strict` |
 | Loop protection | per-run agent-hop cap and inbound A2A depth cap, independent of spend |
 | Trace retention | `scripts/prune_trace_events.py` with dry-run, batching and stats |
 | Virtual model | OpenAI-compatible `/v1/chat/completions` (streaming and non-streaming) |

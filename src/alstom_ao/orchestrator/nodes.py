@@ -9,6 +9,7 @@ Langfuse ``agent`` span carrying the full common trace context.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from typing import Any
@@ -35,6 +36,7 @@ from alstom_ao.domain.models import (
 )
 from alstom_ao.errors import AppError, BudgetExceededError
 from alstom_ao.llm.gateway import BudgetDecision, BudgetState
+from alstom_ao.llm.grounding import apply_grounding
 from alstom_ao.llm.prompts import SYNTHESIZER_SYSTEM, build_synthesizer_user_prompt
 from alstom_ao.observability.alerts import emit_alert
 from alstom_ao.observability.metrics import metrics
@@ -630,6 +632,19 @@ def _compose_fallback(results: list[InvocationResult]) -> str:
     return "\n\n".join(sections)
 
 
+def _agent_text(result: InvocationResult) -> str:
+    """Everything an agent reported, used as the grounding source of truth."""
+
+    parts = [result.text or ""]
+    for artifact in result.artifacts or []:
+        for part in artifact.get("parts") or []:
+            text = part.get("text")
+            if text:
+                parts.append(str(text))
+    parts.append(json.dumps(result.structured or {}, default=str))
+    return "\n".join(parts)
+
+
 async def synthesize_node(state: OrchestratorState, config: RunnableConfig) -> dict[str, Any]:
     runtime = runtime_from(config)
     results = [InvocationResult.model_validate(item) for item in state.get("results", [])]
@@ -647,6 +662,7 @@ async def synthesize_node(state: OrchestratorState, config: RunnableConfig) -> d
         }
 
     budget_note = ""
+    grounding_note: str | None = None
     async with runtime.tracer.span("orchestrator.synthesize", input={"result_count": len(results)}) as observation:
         if runtime.gateway.is_mock:
             response = _compose_fallback(results)
@@ -690,6 +706,31 @@ async def synthesize_node(state: OrchestratorState, config: RunnableConfig) -> d
                     logger.warning("Synthesis failed, falling back to concatenation: %s", exc)
                     response = _compose_fallback(results)
 
+            # A prompt rule cannot guarantee the model kept its arithmetic out, so
+            # every generated answer is checked against the numbers the agents
+            # actually reported. "off" skips the check entirely.
+            grounding_mode = runtime.services.settings.synthesis_grounding
+            if not runtime.gateway.is_mock and grounding_mode != "off":
+                response, report, grounding_note = apply_grounding(
+                    answer=response,
+                    results=[_agent_text(result) for result in results],
+                    query=state.get("query", ""),
+                    mode=grounding_mode,
+                    fallback=_compose_fallback(results),
+                )
+                if not report.ok:
+                    metrics.incr("ao.synthesis.ungrounded")
+                    await runtime.tracer.record(
+                        TraceAction.SYNTHESIS_UNGROUNDED,
+                        TraceStatus.SUCCEEDED if grounding_note == "warned" else TraceStatus.FAILED,
+                        output={
+                            "ungrounded": sorted(report.ungrounded),
+                            "grounded": sorted(report.grounded),
+                            "mode": grounding_mode,
+                            "action": grounding_note,
+                        },
+                    )
+
         if failures:
             response += (
                 f"\n\n> Note: {len(failures)} agent(s) could not complete: "
@@ -702,13 +743,18 @@ async def synthesize_node(state: OrchestratorState, config: RunnableConfig) -> d
                 "response": response[:2000],
                 "failures": len(failures),
                 "budget_limited": bool(budget_note),
+                "grounding": grounding_note or "ok",
             }
         )
 
     await runtime.tracer.record(
         TraceAction.SYNTHESIS_COMPLETED,
         TraceStatus.SUCCEEDED,
-        output={"response": response[:4000], "failed_agents": [failure.get("agent_id") for failure in failures]},
+        output={
+            "response": response[:4000],
+            "failed_agents": [failure.get("agent_id") for failure in failures],
+            "grounding": grounding_note or "ok",
+        },
         metadata={"usage": runtime.budget.snapshot()},
     )
     return {"response": response, "status": str(RunStatus.COMPLETED), "usage": runtime.budget.snapshot()}

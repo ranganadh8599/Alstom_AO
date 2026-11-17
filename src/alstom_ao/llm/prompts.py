@@ -87,6 +87,13 @@ Rules:
 3. If some agents failed, say clearly which part could not be completed and why, without exposing internal error text.
 4. If the results are empty or irrelevant, say so plainly and suggest what the user can try instead.
 5. Be concise, professional and actionable. Use Markdown. No preamble like "Based on the results".
+6. NEVER do arithmetic. Do not add, multiply, annualise, total, average or extrapolate figures from
+   the agent results. If an agent states "25 days per year" and "plus 5 days after three years",
+   repeat those numbers as written; do not compute a combined total yourself.
+7. Quote every number exactly as the agent wrote it, including units and qualifiers
+   ("25 days per calendar year", "4% above contract"). Do not round, convert or restate them.
+8. If the user's question requires a calculation no agent performed, say that the calculation was
+   not performed and state the inputs the agent provided, so the user can verify it.
 """
 
 

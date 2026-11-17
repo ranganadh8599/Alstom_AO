@@ -29,6 +29,8 @@ class FakeA2ANetwork:
         self.fail_paths: set[str] = set()
         self.legacy_only = False
         self.empty_paths: set[str] = set()
+        # path -> verbatim answer text, for tests that need realistic agent output.
+        self.answers: dict[str, str] = {}
 
     def install(self, endpoint: str, *, name: str, version: str = "1.0.0") -> None:
         self._cards[endpoint] = {  # type: ignore[attr-defined]
@@ -85,7 +87,7 @@ class FakeA2ANetwork:
                     "id": body.get("id"),
                     "result": {
                         "id": params.get("id"),
-                        "status": {"state": "completed", "message": {"role": "agent", "parts": [{"type": "text", "text": AGENT_TEXT.format(agent=agent, query=query)}]}},
+                        "status": {"state": "completed", "message": {"role": "agent", "parts": [{"type": "text", "text": self._answer_for(path, agent, query)}]}},
                         "artifacts": [],
                     },
                 },
@@ -102,7 +104,7 @@ class FakeA2ANetwork:
                     "artifacts": [
                         {
                             "artifactId": "answer",
-                            "parts": [{"kind": "text", "text": AGENT_TEXT.format(agent=agent, query=query)}],
+                            "parts": [{"kind": "text", "text": self._answer_for(path, agent, query)}],
                         }
                     ],
                 },
@@ -115,6 +117,11 @@ class FakeA2ANetwork:
 
     def calls_for(self, path_suffix: str) -> list[dict[str, Any]]:
         return [call for call in self.calls if call["path"].endswith(path_suffix)]
+
+    def _answer_for(self, path: str, agent: str, query: str) -> str:
+        """Verbatim answer for this path, falling back to the generic echo."""
+
+        return self.answers.get(path) or AGENT_TEXT.format(agent=agent, query=query)
 
 
 @pytest.fixture

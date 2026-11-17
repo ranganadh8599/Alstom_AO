@@ -1,0 +1,32 @@
+# Build context hygiene.
+#
+# `.env` holds real credentials and must never enter an image layer: once baked in,
+# it ships to any registry and is recoverable from layer history.
+.env
+.env.*
+!.env.example
+
+.git
+.gitignore
+.github
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+*.db
+*.sqlite3
+logs/
+*.log
+.DS_Store
+
+# Documentation is not needed at runtime.
+docs/

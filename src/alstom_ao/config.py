@@ -60,6 +60,8 @@ class Settings(BaseSettings):
     # Runaway-loop protection: caps that bite long before dollars do.
     max_agent_hops: int = 8
     max_a2a_depth: int = 3
+    # Numeric grounding for synthesized answers: off | warn | strict.
+    synthesis_grounding: str = "warn"
     planner_min_confidence: float = 0.35
     planner_max_agents: int = 4
 
@@ -142,6 +144,14 @@ class Settings(BaseSettings):
             # Seeding is refused at startup (see initialize_app) because a hard
             # failure is clearer than a silent flip; we only note other hazards.
         return self
+
+    @field_validator("synthesis_grounding")
+    @classmethod
+    def _validate_grounding(cls, value: str) -> str:
+        value = value.lower().strip()
+        if value not in {"off", "warn", "strict"}:
+            raise ValueError("synthesis_grounding must be 'off', 'warn' or 'strict'")
+        return value
 
     @field_validator("litellm_a2a_protocol_version")
     @classmethod

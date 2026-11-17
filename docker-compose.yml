@@ -84,6 +84,7 @@ services:
       # Agent traffic goes through the LiteLLM agent gateway. Set to "direct"
       # to call each agent endpoint instead.
       AO_A2A_ROUTING: ${AO_A2A_ROUTING:-litellm_proxy}
+      AO_SYNTHESIS_GROUNDING: ${AO_SYNTHESIS_GROUNDING:-warn}
       AO_LITELLM_PROXY_URL: http://litellm:4000
       AO_LITELLM_PROXY_API_KEY: ${LITELLM_MASTER_KEY:-sk-alstom-master}
       AO_LITELLM_A2A_PROTOCOL_VERSION: ${AO_LITELLM_A2A_PROTOCOL_VERSION:-0.3}

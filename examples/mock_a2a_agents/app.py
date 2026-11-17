@@ -71,11 +71,17 @@ AGENTS: dict[str, dict[str, Any]] = {
 
 def _card(name: str) -> dict[str, Any]:
     agent = AGENTS[name]
+    url = f"http://localhost:9101/agents/{name}"
     return {
-        "protocolVersion": "0.2.5",
+        # A2A 0.3: a2a-sdk 1.x (used by the LiteLLM gateway) refuses to build a
+        # client without an explicit transport binding, so the card must declare
+        # both `preferredTransport` and the interface list.
+        "protocolVersion": "0.3",
+        "preferredTransport": "JSONRPC",
+        "additionalInterfaces": [{"url": url, "transport": "JSONRPC"}],
         "name": agent["name"],
         "description": agent["description"],
-        "url": f"http://localhost:9101/agents/{name}",
+        "url": url,
         "version": "1.0.0",
         "capabilities": {"streaming": False, "pushNotifications": False},
         "defaultInputModes": ["text/plain"],
@@ -176,7 +182,10 @@ async def rpc(name: str, request: Request):
         "result": {
             "kind": "task",
             "id": message.get("messageId") or str(uuid.uuid4()),
-            "contextId": metadata.get("trace_context", {}).get("run_id"),
+            # a2a-sdk 1.x validates contextId as a required string; never return null.
+            "contextId": str(
+                (metadata.get("trace_context") or {}).get("run_id") or (message.get("messageId") or uuid.uuid4())
+            ),
             "status": {"state": "completed"},
             "artifacts": [
                 {

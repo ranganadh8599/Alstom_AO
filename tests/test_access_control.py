@@ -10,21 +10,21 @@ FINANCE = dict(
     capabilities=["invoice audit", "duplicate invoice detection"],
     tags=["finance", "invoice"],
     examples=["Check invoice INV-2024-0912 for duplicate charges"],
-    allowed_roles=["user", "finance"],
+    allowed_roles=["admin"],
     allowed_actions=["read", "query", "analyze"],
     risk_level="low",
 )
 
-ALICE = {"X-User-Id": "alice", "X-User-Roles": "user,finance", "X-Tenant-Id": "tenant-A"}
+ALICE = {"X-User-Id": "alice", "X-User-Roles": "user", "X-Tenant-Id": "tenant-A"}
 MALLORY = {"X-User-Id": "mallory", "X-User-Roles": "user", "X-Tenant-Id": "tenant-B"}
 BOB_SAME_TENANT_APPROVER = {
     "X-User-Id": "bob",
-    "X-User-Roles": "approver",
+    "X-User-Roles": "admin",
     "X-Tenant-Id": "tenant-A",
 }
 CAROL_OTHER_TENANT_APPROVER = {
     "X-User-Id": "carol",
-    "X-User-Roles": "approver",
+    "X-User-Roles": "admin",
     "X-Tenant-Id": "tenant-B",
 }
 
@@ -58,13 +58,23 @@ async def test_cross_tenant_user_cannot_read_run(client, admin_headers):
         assert response.json()["error"]["code"] == "forbidden"
 
 
-async def test_cross_tenant_approver_cannot_read_run(client, admin_headers):
+async def test_cross_tenant_plain_user_cannot_read_run(client, admin_headers):
+    """With only ADMIN/USER, tenancy is enforced for users; admin is global."""
+
     run = await _make_run(client, admin_headers)
-    response = await client.get(f"/v1/runs/{run['run_id']}", headers=CAROL_OTHER_TENANT_APPROVER)
+    other_tenant_user = {"X-User-Id": "carol", "X-User-Roles": "user", "X-Tenant-Id": "tenant-B"}
+    response = await client.get(f"/v1/runs/{run['run_id']}", headers=other_tenant_user)
     assert response.status_code == 403
 
 
-async def test_same_tenant_approver_can_review_colleague_run(client, admin_headers):
+async def test_admin_reads_any_tenant(client, admin_headers):
+    run = await _make_run(client, admin_headers)
+    other_tenant_admin = {"X-User-Id": "carol-admin", "X-User-Roles": "admin", "X-Tenant-Id": "tenant-B"}
+    response = await client.get(f"/v1/runs/{run['run_id']}", headers=other_tenant_admin)
+    assert response.status_code == 200
+
+
+async def test_same_tenant_admin_can_review_colleague_run(client, admin_headers):
     run = await _make_run(client, admin_headers)
     response = await client.get(f"/v1/runs/{run['run_id']}", headers=BOB_SAME_TENANT_APPROVER)
     assert response.status_code == 200
@@ -90,7 +100,7 @@ async def test_approvals_are_hidden_from_other_tenants(client, admin_headers, ap
         capabilities=["invoice adjustment"],
         tags=["finance"],
         examples=["Create an adjustment task for invoice INV-9"],
-        allowed_roles=["user", "finance"],
+        allowed_roles=["admin"],
         allowed_actions=["read", "write"],
         requires_approval_for=["write"],
         risk_level="high",
@@ -111,18 +121,17 @@ async def test_approvals_are_hidden_from_other_tenants(client, admin_headers, ap
 
     # Another tenant must not see it, list it, or decide it.
     assert (await client.get(f"/v1/approvals/{approval_id}", headers=MALLORY)).status_code == 403
-    assert (
-        await client.get(f"/v1/approvals/{approval_id}", headers=CAROL_OTHER_TENANT_APPROVER)
-    ).status_code == 403
+    other_tenant_user = {"X-User-Id": "carol", "X-User-Roles": "user", "X-Tenant-Id": "tenant-B"}
+    assert (await client.get(f"/v1/approvals/{approval_id}", headers=other_tenant_user)).status_code == 403
 
     listed = await client.get("/v1/approvals", headers=MALLORY)
     assert listed.json()["items"] == []
-    listed_other_approver = await client.get("/v1/approvals", headers=CAROL_OTHER_TENANT_APPROVER)
-    assert listed_other_approver.json()["items"] == []
+    listed_other = await client.get("/v1/approvals", headers=other_tenant_user)
+    assert listed_other.json()["items"] == []
 
     decision = await client.post(
         f"/v1/approvals/{approval_id}/decision",
         json={"approved": True},
-        headers=CAROL_OTHER_TENANT_APPROVER,
+        headers=other_tenant_user,
     )
     assert decision.status_code == 403

@@ -14,7 +14,7 @@ FINANCE_HIGH_RISK = dict(
     capabilities=["invoice audit", "duplicate invoice detection", "invoice adjustment"],
     tags=["finance", "invoice"],
     examples=["Create an adjustment task for invoice INV-2024-0912"],
-    allowed_roles=["user", "finance"],
+    allowed_roles=["admin"],
     allowed_actions=["read", "query", "analyze", "write"],
     requires_approval_for=["write", "update", "payment"],
     risk_level="high",
@@ -26,7 +26,7 @@ HR_READ_ONLY = dict(
     capabilities=["hr policy lookup", "leave and absence rules"],
     tags=["hr", "policy", "leave"],
     examples=["How many days of annual leave do I get?"],
-    allowed_roles=["user"],
+    allowed_roles=["admin"],
     allowed_actions=["read", "query", "analyze"],
     risk_level="low",
 )
@@ -178,7 +178,7 @@ def _assessment(plan_requires: bool, action, query: str = "", **card_overrides):
         endpoint="http://test/agents/finance",
         capabilities=["invoice audit"],
         permissions=AgentPermissions(
-            allowed_roles=["user"],
+            allowed_roles=["admin"],
             allowed_actions=["read", "query", "analyze", "write"],
             **{"requires_approval_for": ["write", "update", "payment"], **card_overrides},
         ),

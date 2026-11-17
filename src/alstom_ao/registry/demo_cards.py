@@ -65,7 +65,7 @@ def demo_cards(settings: Settings) -> list[AgentCardCreate]:
             output_schema=answer_schema,
             auth=AgentAuth(type="none"),
             permissions=AgentPermissions(
-                allowed_roles=["user", "finance", "finance-manager", "approver", "platform-admin"],
+                allowed_roles=["user", "admin"],
                 allowed_actions=["read", "query", "analyze", "write"],
                 requires_approval_for=["write", "update", "payment"],
                 data_classification="confidential",
@@ -109,7 +109,7 @@ def demo_cards(settings: Settings) -> list[AgentCardCreate]:
             output_schema=answer_schema,
             auth=AgentAuth(type="none"),
             permissions=AgentPermissions(
-                allowed_roles=["user", "employee", "manager", "hr", "platform-admin"],
+                allowed_roles=["user", "admin"],
                 allowed_actions=["read", "query", "analyze"],
                 data_classification="internal",
             ),
@@ -149,7 +149,7 @@ def demo_cards(settings: Settings) -> list[AgentCardCreate]:
             output_schema=answer_schema,
             auth=AgentAuth(type="none"),
             permissions=AgentPermissions(
-                allowed_roles=["user", "employee", "it", "platform-admin"],
+                allowed_roles=["user", "admin"],
                 allowed_actions=["read", "query", "analyze", "write"],
                 requires_approval_for=["write", "execute"],
                 data_classification="internal",

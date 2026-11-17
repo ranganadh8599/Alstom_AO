@@ -178,7 +178,7 @@ def user_headers() -> dict[str, str]:
     return {
         "X-User-Id": "alice",
         "X-User-Email": "alice@example.com",
-        "X-User-Roles": "user,finance",
+        "X-User-Roles": "user",
         "X-User-Team": "finance",
         "X-Tenant-Id": "tenant-a",
         "X-Use-Case": "test",
@@ -189,7 +189,7 @@ def user_headers() -> dict[str, str]:
 def admin_headers() -> dict[str, str]:
     return {
         "X-User-Id": "admin",
-        "X-User-Roles": "platform-admin",
+        "X-User-Roles": "admin",
         "X-Tenant-Id": "tenant-a",
     }
 
@@ -198,7 +198,7 @@ def admin_headers() -> dict[str, str]:
 def approver_headers() -> dict[str, str]:
     return {
         "X-User-Id": "approver-bob",
-        "X-User-Roles": "approver",
+        "X-User-Roles": "admin",
         "X-Tenant-Id": "tenant-a",
     }
 
@@ -232,7 +232,7 @@ def agent_payload(
         "output_schema": {"type": "object", "properties": {"answer": {"type": "string"}}},
         "auth": auth or {"type": "none"},
         "permissions": {
-            "allowed_roles": allowed_roles or ["user", "finance"],
+            "allowed_roles": allowed_roles or ["user", "admin"],
             "allowed_actions": allowed_actions or ["read", "query", "analyze", "write"],
             "requires_approval_for": requires_approval_for or [],
             "required_scopes": required_scopes or [],

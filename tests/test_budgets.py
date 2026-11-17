@@ -28,7 +28,7 @@ FINANCE = dict(
     capabilities=["invoice audit", "duplicate invoice detection"],
     tags=["finance", "invoice"],
     examples=["Check invoice INV-2024-0912 for duplicate charges"],
-    allowed_roles=["user", "finance"],
+    allowed_roles=["admin"],
     allowed_actions=["read", "query", "analyze"],
     risk_level="low",
 )
@@ -216,7 +216,7 @@ async def budget_app(a2a, request):
 async def _register_and_run(app, headers) -> dict:
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        admin = {"X-User-Id": "admin", "X-User-Roles": "platform-admin"}
+        admin = {"X-User-Id": "admin", "X-User-Roles": "admin"}
         await client.post("/v1/agents", json=agent_payload(**FINANCE), headers=admin)
         response = await client.post("/v1/orchestrate", json=QUERY, headers=headers)
         return {"status_code": response.status_code, "body": response.json()}
@@ -245,7 +245,7 @@ async def test_hop_cap_drops_lowest_priority_agents(budget_app, user_headers, a2
 
     transport = httpx.ASGITransport(app=budget_app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        admin = {"X-User-Id": "admin", "X-User-Roles": "platform-admin"}
+        admin = {"X-User-Id": "admin", "X-User-Roles": "admin"}
         for agent_id in ("finance-invoice-auditor", "finance-invoice-auditor-2"):
             payload = {**agent_payload(**{**FINANCE, "agent_id": agent_id})}
             await client.post("/v1/agents", json=payload, headers=admin)
@@ -327,7 +327,7 @@ async def test_soft_threshold_degrades_instead_of_failing(
 async def test_inbound_depth_limit_blocks_fan_out(budget_app, user_headers, a2a):
     transport = httpx.ASGITransport(app=budget_app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        admin = {"X-User-Id": "admin", "X-User-Roles": "platform-admin"}
+        admin = {"X-User-Id": "admin", "X-User-Roles": "admin"}
         await client.post("/v1/agents", json=agent_payload(**FINANCE), headers=admin)
         response = await client.post(
             "/v1/orchestrate", json=QUERY, headers={**user_headers, "X-Alstom-Depth": "2"}
@@ -342,7 +342,7 @@ async def test_inbound_depth_limit_blocks_fan_out(budget_app, user_headers, a2a)
 async def test_depth_below_limit_is_allowed(budget_app, user_headers, a2a):
     transport = httpx.ASGITransport(app=budget_app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        admin = {"X-User-Id": "admin", "X-User-Roles": "platform-admin"}
+        admin = {"X-User-Id": "admin", "X-User-Roles": "admin"}
         await client.post("/v1/agents", json=agent_payload(**FINANCE), headers=admin)
         response = await client.post(
             "/v1/orchestrate", json=QUERY, headers={**user_headers, "X-Alstom-Depth": "1"}

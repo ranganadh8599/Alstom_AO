@@ -117,7 +117,7 @@ def make_card(**overrides) -> AgentCard:
 
 def make_request(agent_id: str = "finance-invoice-auditor") -> InvocationRequest:
     identity = IdentityContext(
-        user=UserIdentity(user_id="alice", roles=["user", "finance"], tenant_id="tenant-a"),
+        user=UserIdentity(user_id="alice", roles=["user"], tenant_id="tenant-a"),
         service=ServiceIdentity(service_id="alstom-ao"),
     )
     trace = TraceContext(
@@ -275,7 +275,7 @@ async def test_orchestration_routes_agent_calls_through_the_gateway(
         capabilities=["invoice audit", "duplicate invoice detection"],
         tags=["finance", "invoice"],
         examples=["Check invoice INV-2024-0912 for duplicate charges"],
-        allowed_roles=["user", "finance"],
+        allowed_roles=["admin"],
         allowed_actions=["read", "query", "analyze"],
     )
     created = await proxy_client.post("/v1/agents", json=payload, headers=admin_headers)

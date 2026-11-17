@@ -68,7 +68,7 @@ def test_denies_environment_mismatch():
 def test_denies_role_and_action():
     decision = local_decision(
         identity=make_identity(roles=["user"]),
-        agent=make_card(allowed_roles=["finance-manager"], allowed_actions=["read"]),
+        agent=make_card(allowed_roles=["admin"], allowed_actions=["read"]),
         action=ActionType.QUERY,
         environment="test",
     )
@@ -113,7 +113,7 @@ def test_high_risk_write_requires_approval_but_read_does_not():
 
 def test_admin_bypasses_environment_check():
     decision = local_decision(
-        identity=make_identity(roles=["platform-admin"]),
+        identity=make_identity(roles=["admin"]),
         agent=make_card(environment="prod"),
         action=ActionType.QUERY,
         environment="test",
@@ -125,7 +125,7 @@ async def test_observe_mode_records_denial_without_blocking():
     service = PolicyService(settings(policy_mode="observe"))
     decision = await service.evaluate_agent(
         identity=make_identity(roles=["user"]),
-        agent=make_card(allowed_roles=["finance-manager"]),
+        agent=make_card(allowed_roles=["admin"]),
         action=ActionType.QUERY,
         environment="test",
         use_case="test",

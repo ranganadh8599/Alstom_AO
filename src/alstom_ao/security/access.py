@@ -24,8 +24,9 @@ from alstom_ao.config import Settings
 from alstom_ao.domain.models import ApprovalRequest, IdentityContext, RunRecord
 from alstom_ao.errors import ForbiddenError
 
-REVIEWER_ROLES = {"approver", "compliance-officer", "team-lead"}
-GLOBAL_ADMIN_ROLES = {"platform-admin"}
+REVIEWER_ROLES = {"admin"}
+GLOBAL_ADMIN_ROLES = {"admin"}
+ADMIN_ROLE = "admin"
 
 
 def is_platform_admin(identity: IdentityContext) -> bool:

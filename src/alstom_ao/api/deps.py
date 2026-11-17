@@ -22,7 +22,7 @@ from alstom_ao.policy.service import PolicyService
 from alstom_ao.registry.service import AgentRegistryService
 from alstom_ao.security.identity import extract_identity, use_case_from_headers
 
-REGISTRY_ADMIN_ROLES = {"platform-admin", "registry-admin"}
+REGISTRY_ADMIN_ROLES = {"admin"}
 
 
 @dataclass
@@ -114,7 +114,7 @@ def resolve_identity(
 async def require_registry_admin(identity: IdentityContext = Depends(get_identity)) -> IdentityContext:
     if not identity.user.has_any_role(sorted(REGISTRY_ADMIN_ROLES)):
         raise ForbiddenError(
-            "Registering or changing agents requires the platform-admin or registry-admin role.",
+            "Registering or changing agents requires the admin role.",
             details={"required_roles": sorted(REGISTRY_ADMIN_ROLES)},
         )
     return identity

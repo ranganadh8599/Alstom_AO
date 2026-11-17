@@ -25,7 +25,7 @@ from alstom_ao.domain.models import AgentCard, IdentityContext, PolicyDecision
 logger = logging.getLogger(__name__)
 
 HIGH_IMPACT_ACTIONS = {action.value for action in ActionType if action.is_high_impact}
-APPROVER_ROLES = {"approver", "platform-admin", "compliance-officer"}
+APPROVER_ROLES = {"admin"}
 
 
 def build_policy_input(
@@ -110,7 +110,7 @@ def local_decision(
 
     reasons: list[str] = []
     roles = {role.lower() for role in identity.user.roles}
-    is_admin = "platform-admin" in roles
+    is_admin = "admin" in roles
 
     if agent.status != AgentStatus.ACTIVE:
         reasons.append("agent_not_active")
@@ -131,7 +131,7 @@ def local_decision(
         reasons.append("tenant_mismatch")
 
     if agent.permissions.data_classification == "restricted":
-        if not (roles & {"data-steward", "platform-admin"}):
+        if not (roles & {"admin"}):
             reasons.append("restricted_data_role_missing")
 
     approved_action = action in agent.permissions.approval_actions

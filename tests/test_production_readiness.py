@@ -15,7 +15,7 @@ FINANCE = dict(
     capabilities=["invoice audit", "duplicate invoice detection"],
     tags=["finance", "invoice"],
     examples=["Check invoice INV-2024-0912 for duplicate charges"],
-    allowed_roles=["user", "finance"],
+    allowed_roles=["admin"],
     allowed_actions=["read", "query", "analyze"],
 )
 
@@ -106,7 +106,7 @@ async def test_replay_of_paused_run_returns_pending_approval(client, user_header
         capabilities=["invoice audit", "invoice adjustment"],
         tags=["finance", "invoice"],
         examples=["Create an adjustment task for invoice INV-2024-0912"],
-        allowed_roles=["user", "finance"],
+        allowed_roles=["admin"],
         allowed_actions=["read", "query", "analyze", "write"],
         requires_approval_for=["write"],
         risk_level="high",
@@ -158,7 +158,7 @@ async def test_production_starts_when_seeding_is_disabled():
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.get("/healthz")
             assert response.status_code == 200
-            agents = await client.get("/v1/agents", headers={"X-User-Id": "admin", "X-User-Roles": "platform-admin"})
+            agents = await client.get("/v1/agents", headers={"X-User-Id": "admin", "X-User-Roles": "admin"})
             assert agents.json()["total"] == 0
     finally:
         await shutdown_app(app)
@@ -237,12 +237,12 @@ async def test_lost_checkpoint_state_is_rejected_not_silently_completed(tmp_path
     try:
         transport = httpx.ASGITransport(app=app_one)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            admin = {"X-User-Id": "admin", "X-User-Roles": "platform-admin"}
+            admin = {"X-User-Id": "admin", "X-User-Roles": "admin"}
             assert (await client.post("/v1/agents", json=payload, headers=admin)).status_code == 201
             started = await client.post(
                 "/v1/orchestrate",
                 json={"query": "Create an adjustment task for invoice INV-9"},
-                headers={"X-User-Id": "alice", "X-User-Roles": "user,finance"},
+                headers={"X-User-Id": "alice", "X-User-Roles": "user"},
             )
             run = started.json()["run"]
             assert run["status"] == "awaiting_approval"
@@ -258,7 +258,7 @@ async def test_lost_checkpoint_state_is_rejected_not_silently_completed(tmp_path
     try:
         transport = httpx.ASGITransport(app=app_two)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            approver = {"X-User-Id": "bob", "X-User-Roles": "approver"}
+            approver = {"X-User-Id": "bob", "X-User-Roles": "admin"}
             decision = await client.post(
                 f"/v1/approvals/{approval_id}/decision", json={"approved": True}, headers=approver
             )
@@ -271,7 +271,7 @@ async def test_lost_checkpoint_state_is_rejected_not_silently_completed(tmp_path
             approval = await client.get(f"/v1/approvals/{approval_id}", headers=approver)
             assert approval.json()["status"] == "pending"
             stored = await client.get(
-                f"/v1/runs/{run_id}", headers={"X-User-Id": "alice", "X-User-Roles": "user,finance"}
+                f"/v1/runs/{run_id}", headers={"X-User-Id": "alice", "X-User-Roles": "user"}
             )
             assert stored.json()["status"] == "awaiting_approval"
     finally:

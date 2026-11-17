@@ -28,7 +28,7 @@ HR = dict(
     capabilities=["leave and absence rules", "hr policy lookup"],
     tags=["hr", "leave"],
     examples=["How many days of annual leave do I get after three years?"],
-    allowed_roles=["user"],
+    allowed_roles=["admin"],
     allowed_actions=["read", "query", "analyze"],
     risk_level="low",
 )
@@ -108,7 +108,7 @@ async def _run(app, headers, a2a: FakeA2ANetwork) -> dict:
     a2a.answers["/agents/hr"] = AGENT_ANSWER
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        admin = {"X-User-Id": "admin", "X-User-Roles": "platform-admin"}
+        admin = {"X-User-Id": "admin", "X-User-Roles": "admin"}
         await client.post("/v1/agents", json=agent_payload(**HR), headers=admin)
         response = await client.post("/v1/orchestrate", json={"query": QUERY}, headers=headers)
         assert response.status_code == 200, response.text

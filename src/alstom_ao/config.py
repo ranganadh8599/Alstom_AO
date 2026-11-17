@@ -33,7 +33,17 @@ class Settings(BaseSettings):
     # --- identity --------------------------------------------------------
     require_user_identity: bool = True
     trust_forwarded_identity: bool = True
+    # --- identity / roles -------------------------------------------------
+    # Role vocabulary is deliberately just ADMIN/USER, matching what the chat UI
+    # (LibreChat) presents. Business roles are not modelled yet: they belong to the
+    # IdP mapping, which does not exist in this deployment.
     default_user_roles: str = "user"
+    admin_roles: str = "admin"
+    approver_roles: str = "admin"
+    reviewer_roles: str = "admin"
+    # Incoming role names are normalised with this map (case-insensitive), so a UI
+    # sending "ADMIN"/"USER" (or "Admin") resolves to the canonical names.
+    role_aliases: str = "admin:admin,user:user"
     service_id: str = "alstom-ao"
     service_name: str = "agent-orchestrator"
 
@@ -101,7 +111,7 @@ class Settings(BaseSettings):
     # --- approvals -------------------------------------------------------
     approval_risk_threshold: str = "high"
     approval_ttl_minutes: int = 120
-    approval_admin_roles: str = "platform-admin,approver"
+    approval_admin_roles: str = "admin"
     approval_admin_bypass: bool = False
     approval_allow_self: bool = False
 
@@ -198,6 +208,54 @@ class Settings(BaseSettings):
     @property
     def default_roles(self) -> list[str]:
         return [item.strip() for item in self.default_user_roles.split(",") if item.strip()]
+
+    def _role_set(self, value: str) -> list[str]:
+        return [item.strip().lower() for item in value.split(",") if item.strip()]
+
+    @property
+    def admin_role_list(self) -> list[str]:
+        return self._role_set(self.admin_roles)
+
+    @property
+    def approver_role_list(self) -> list[str]:
+        return self._role_set(self.approver_roles)
+
+    @property
+    def reviewer_role_list(self) -> list[str]:
+        return self._role_set(self.reviewer_roles)
+
+    @property
+    def role_alias_map(self) -> dict[str, str]:
+        """Incoming role name (lowercase) -> canonical role name."""
+
+        mapping: dict[str, str] = {}
+        for pair in self.role_aliases.split(","):
+            if not pair.strip() or ":" not in pair:
+                continue
+            source, target = pair.split(":", 1)
+            mapping[source.strip().lower()] = target.strip().lower()
+        return mapping
+
+    def canonical_roles(self, roles: list[str]) -> list[str]:
+        """Normalise presented roles to the platform vocabulary.
+
+        Unknown roles are dropped rather than propagated: the vocabulary is just
+        ADMIN/USER, and forwarding names that no rule recognises only produces
+        confusing "role not permitted" denials.
+        """
+
+        aliases = self.role_alias_map
+        canonical: list[str] = []
+        for role in roles:
+            key = role.strip().lower()
+            if not key:
+                continue
+            mapped = aliases.get(key)
+            if mapped and mapped not in canonical:
+                canonical.append(mapped)
+        if not canonical and self.default_roles:
+            canonical = [item.strip().lower() for item in self.default_roles]
+        return canonical
 
     @property
     def approval_admin_role_list(self) -> list[str]:

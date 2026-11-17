@@ -10,7 +10,7 @@ import rego.v1
 
 default allow := false
 
-approver_roles := {"approver", "platform-admin", "compliance-officer"}
+approver_roles := {"admin"}
 
 roles := object.get(input.user, "roles", [])
 

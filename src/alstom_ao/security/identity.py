@@ -77,7 +77,9 @@ def extract_identity(headers: Mapping[str, str], settings: Settings, *, client_i
         )
     user_id = user_id or "anonymous"
 
-    roles = _split(_header(headers, HEADER_USER_ROLES)) or settings.default_roles
+    roles = _split(_header(headers, HEADER_USER_ROLES))
+    presented = list(roles)
+    canonical = settings.canonical_roles(roles) or settings.default_roles
 
     authorization = _header(headers, "authorization") or ""
     token = authorization[7:] if authorization.lower().startswith("bearer ") else None
@@ -86,9 +88,12 @@ def extract_identity(headers: Mapping[str, str], settings: Settings, *, client_i
         user_id=user_id,
         email=_header(headers, HEADER_USER_EMAIL),
         name=_header(headers, HEADER_USER_NAME),
-        roles=roles,
+        roles=canonical,
         team=_header(headers, HEADER_USER_TEAM),
         tenant_id=_header(headers, HEADER_TENANT_ID),
+        # Keep what the caller actually presented, for audit and debugging: the
+        # canonical roles are what rules use, the presented ones explain denials.
+        attributes={"presented_roles": presented} if presented else {},
     )
     service = ServiceIdentity(
         service_id=_header(headers, HEADER_SERVICE_ID) or settings.service_id,

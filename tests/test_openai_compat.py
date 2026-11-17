@@ -14,7 +14,7 @@ FINANCE = dict(
     capabilities=["invoice audit", "duplicate invoice detection"],
     tags=["finance", "invoice"],
     examples=["Check invoice INV-2024-0912 for duplicate charges"],
-    allowed_roles=["user", "finance"],
+    allowed_roles=["admin"],
     allowed_actions=["read", "query", "analyze"],
     risk_level="low",
 )

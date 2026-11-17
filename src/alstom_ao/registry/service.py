@@ -204,7 +204,7 @@ class AgentRegistryService:
                 continue
             if card.permissions.allowed_roles and role_set:
                 allowed = {role.lower() for role in card.permissions.allowed_roles}
-                if not (allowed & role_set) and "platform-admin" not in role_set:
+                if not (allowed & role_set) and "admin" not in role_set:
                     role_filtered_out += 1
                     continue
             catalog.append(self._catalog_entry(card))

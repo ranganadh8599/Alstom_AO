@@ -23,7 +23,7 @@ HR = dict(
     capabilities=["leave and absence rules"],
     tags=["hr", "leave"],
     examples=["How many days of annual leave do I get?"],
-    allowed_roles=["user"],
+    allowed_roles=["admin"],
     allowed_actions=["read", "query", "analyze"],
     risk_level="low",
 )
@@ -181,7 +181,7 @@ def _client(app):
 async def test_block_mode_rejects_injection_before_any_agent(make_app, user_headers, a2a):
     app = await make_app(guardrails_mode="block")
     client = _client(app)
-    admin = {"X-User-Id": "admin", "X-User-Roles": "platform-admin"}
+    admin = {"X-User-Id": "admin", "X-User-Roles": "admin"}
     await client.post("/v1/agents", json=agent_payload(**HR), headers=admin)
     response = await client.post(
         "/v1/orchestrate",
@@ -202,7 +202,7 @@ async def test_block_mode_rejects_injection_before_any_agent(make_app, user_head
 async def test_warn_mode_allows_flagged_input(make_app, user_headers, a2a):
     app = await make_app(guardrails_mode="warn")
     client = _client(app)
-    admin = {"X-User-Id": "admin", "X-User-Roles": "platform-admin"}
+    admin = {"X-User-Id": "admin", "X-User-Roles": "admin"}
     await client.post("/v1/agents", json=agent_payload(**HR), headers=admin)
     response = await client.post(
         "/v1/orchestrate",

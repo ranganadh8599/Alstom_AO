@@ -22,7 +22,7 @@ has_role(role) if {
 	lower(candidate) == lower(role)
 }
 
-is_admin if has_role("platform-admin")
+is_admin if has_role("admin")
 
 # --- individual checks -----------------------------------------------------
 
@@ -90,7 +90,7 @@ tenant_ok if is_admin
 classification_ok if object.get(input.agent.permissions, "data_classification", "internal") != "restricted"
 
 classification_ok if {
-	has_role("data-steward")
+	has_role("admin")
 }
 
 classification_ok if is_admin

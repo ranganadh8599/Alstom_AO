@@ -57,3 +57,29 @@ async def test_catalog_is_role_filtered(client, user_headers, admin_headers):
     ids = [item["agent_id"] for item in catalog.json()["agents"]]
     assert "user-agent" in ids
     assert "finance-only-agent" not in ids
+# ---------------------------------------------------------------------------
+# catalog must not empty out on an unmapped role
+# ---------------------------------------------------------------------------
+
+
+async def test_unmapped_role_returns_unfiltered_catalog(client, admin_headers):
+    """A UI sending an application role (ADMIN) must not see "no agents"."""
+
+    await client.post("/v1/agents", json=agent_payload("finance-agent", allowed_roles=["finance"]), headers=admin_headers)
+
+    ui_headers = {"X-User-Id": "6afcce251a37b84260e76d33", "X-User-Roles": "ADMIN"}
+    catalog = await client.get("/v1/agents/catalog", headers=ui_headers)
+    assert catalog.status_code == 200
+    body = catalog.json()
+    assert body["total"] >= 1
+    assert any(item["agent_id"] == "finance-agent" for item in body["agents"])
+
+
+async def test_matching_role_still_filters(client, admin_headers):
+    await client.post("/v1/agents", json=agent_payload("finance-agent", allowed_roles=["finance"]), headers=admin_headers)
+    await client.post("/v1/agents", json=agent_payload("hr-agent", allowed_roles=["hr"]), headers=admin_headers)
+
+    catalog = await client.get("/v1/agents/catalog", headers={"X-User-Id": "f1", "X-User-Roles": "finance"})
+    ids = [item["agent_id"] for item in catalog.json()["agents"]]
+    assert "finance-agent" in ids
+    assert "hr-agent" not in ids

@@ -6,6 +6,7 @@ across requests.
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
@@ -19,6 +20,8 @@ from alstom_ao.domain.enums import AgentHealth, AgentStatus, RiskLevel
 from alstom_ao.domain.models import AgentCard, AgentCardCreate, AgentPermissions
 from alstom_ao.errors import InputValidationError, NotFoundError
 from alstom_ao.llm.schema_check import validate_schema_definition
+
+logger = logging.getLogger(__name__)
 
 
 def slugify(value: str) -> str:
@@ -180,11 +183,20 @@ class AgentRegistryService:
         roles: list[str] | None = None,
         include_degraded: bool = True,
     ) -> list[dict[str, Any]]:
-        """Compact, safe catalog for the planner prompt (no endpoints, no auth)."""
+        """Compact, safe catalog for the planner prompt (no endpoints, no auth).
+
+        Roles shape the prompt so a user is not offered agents they can never call.
+        But if role filtering would hide *every* agent, the result is a confusing
+        "no agents registered" message for a user who merely has an unmapped role
+        (e.g. a UI sending ``ADMIN`` instead of a business role). In that case the
+        catalog is returned unfiltered and OPA denies per agent with a real reason,
+        which is both accurate and diagnosable.
+        """
 
         cards = await self.list_cards(environment=environment, status=AgentStatus.ACTIVE, limit=500)
         role_set = {role.lower() for role in (roles or [])}
         catalog: list[dict[str, Any]] = []
+        role_filtered_out = 0
         for card in cards:
             if card.health == AgentHealth.UNHEALTHY:
                 continue
@@ -193,24 +205,39 @@ class AgentRegistryService:
             if card.permissions.allowed_roles and role_set:
                 allowed = {role.lower() for role in card.permissions.allowed_roles}
                 if not (allowed & role_set) and "platform-admin" not in role_set:
-                    # The caller could never use this agent; keep it out of the prompt.
+                    role_filtered_out += 1
                     continue
-            catalog.append(
-                {
-                    "agent_id": card.agent_id,
-                    "name": card.name,
-                    "description": card.description,
-                    "capabilities": card.capabilities,
-                    "tags": card.tags,
-                    "examples": card.examples[:3],
-                    "risk_level": str(card.risk_level),
-                    "allowed_actions": [str(action) for action in card.permissions.allowed_actions],
-                    "requires_approval_for": [str(action) for action in card.permissions.requires_approval_for],
-                    "version": card.version,
-                    "owner": card.owner,
-                }
+            catalog.append(self._catalog_entry(card))
+
+        if not catalog and role_filtered_out:
+            logger.warning(
+                "Role filter %s excluded all %s agent(s); returning the unfiltered catalog and letting policy decide.",
+                sorted(role_set),
+                role_filtered_out,
             )
+            catalog = [
+                self._catalog_entry(card)
+                for card in cards
+                if card.health != AgentHealth.UNHEALTHY
+                and (include_degraded or card.health != AgentHealth.DEGRADED)
+            ]
         return catalog
+
+    @staticmethod
+    def _catalog_entry(card: AgentCard) -> dict[str, Any]:
+        return {
+            "agent_id": card.agent_id,
+            "name": card.name,
+            "description": card.description,
+            "capabilities": card.capabilities,
+            "tags": card.tags,
+            "examples": card.examples[:3],
+            "risk_level": str(card.risk_level),
+            "allowed_actions": [str(action) for action in card.permissions.allowed_actions],
+            "requires_approval_for": [str(action) for action in card.permissions.requires_approval_for],
+            "version": card.version,
+            "owner": card.owner,
+        }
 
     @staticmethod
     def catalog_summary(catalog: list[dict[str, Any]], limit: int = 6) -> str:

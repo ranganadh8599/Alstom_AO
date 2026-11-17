@@ -109,5 +109,6 @@ class TraceAction(StrEnum):
     AGENT_RETRIED = "agent.retried"
     SYNTHESIS_COMPLETED = "synthesis.completed"
     SYNTHESIS_UNGROUNDED = "synthesis.ungrounded"
+    AGENTS_INCONSISTENT = "agents.inconsistent"
     RUN_COMPLETED = "run.completed"
     RUN_FAILED = "run.failed"

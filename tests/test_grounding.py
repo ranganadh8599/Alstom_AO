@@ -212,3 +212,157 @@ async def test_off_mode_disables_the_check(grounding_app_factory, user_headers, 
 def test_invalid_mode_is_rejected():
     with pytest.raises(ValueError):
         Settings(environment="test", synthesis_grounding="maybe")
+
+# ---------------------------------------------------------------------------
+# limitation 1: literal matching is too brittle
+# ---------------------------------------------------------------------------
+
+
+def test_decimal_restatement_is_not_flagged():
+    """'"4%" vs "4.0%" is the same quantity."""
+
+    report = check_grounding("The line item is 4.0% above contract.", ["One line item is 4% above contract"])
+    assert report.ok, report.ungrounded
+
+
+def test_integer_vs_decimal_trailing_zero_is_not_flagged():
+    report = check_grounding("You get 25.0 days per year.", ["employees accrue 25 days per year"])
+    assert report.ok, report.ungrounded
+
+
+def test_thousands_separator_is_not_flagged():
+    report = check_grounding("The budget is $1,200 per seat.", ["budget of 1200 USD per seat"])
+    assert report.ok, report.ungrounded
+
+
+def test_spelled_number_restatement_is_not_flagged():
+    """Model writing "3 years" where the agent wrote "three years"."""
+
+    report = check_grounding("After 3 years, you get 5 extra days.", ["plus 5 days after three years of service"])
+    assert report.ok, report.ungrounded
+
+
+def test_tolerance_does_not_hide_arithmetic():
+    """80 vs 75 must still be caught: tolerance is representation only."""
+
+    report = check_grounding("A total of 80 days.", ["25 days per year", "plus 5 after three years"])
+    assert report.ungrounded == ["80"]
+
+
+def test_redaction_removes_only_the_offending_sentence():
+    from alstom_ao.llm.grounding import redact_sentences
+
+    answer = (
+        "Under HR policy 4.2 you accrue 25 days per year. "
+        "Therefore you get a total of 80 days. "
+        "Requests over 10 consecutive days need approval."
+    )
+    kept, removed, count = redact_sentences(answer, known=[25.0, 10.0, 4.0, 2.0, 5.0])
+    assert "80" not in kept
+    assert "25 days" in kept and "10 consecutive" in kept
+    assert count == 1
+    assert removed == ["80"]
+
+
+def test_strict_redacts_instead_of_discarding_everything():
+    from alstom_ao.llm.grounding import apply_grounding
+
+    answer = (
+        "Under HR policy 4.2 you accrue 25 days per year. "
+        "Therefore you get a total of 80 days. "
+        "Requests over 10 consecutive days need approval."
+    )
+    text, report, action = apply_grounding(
+        answer=answer,
+        results=["employees accrue 25 days per year, plus 5 after three years, request over 10 days needs approval"],
+        query="How many days?",
+        mode="strict",
+        fallback="verbatim agent text",
+    )
+    assert action == "strict_redacted"
+    assert "total of 80" not in text  # the claim is gone; the note may name it`r`n    assert "25 days" in text
+    assert "Removed 1 sentence" in text
+
+
+def test_failed_repair_falls_back_to_original_verdict():
+    """A degenerate repair must not launder a fabricated figure."""
+
+    from alstom_ao.llm.grounding import apply_grounding
+
+    text, report, action = apply_grounding(
+        answer="A total of 80 days.",
+        results=["25 days per year"],
+        query="How many?",
+        mode="warn",
+        fallback="25 days per year",
+        repaired_answer="{}",
+    )
+    assert action == "warned"
+    assert "80" in text and "unverified" in text
+
+
+def test_successful_repair_is_accepted():
+    from alstom_ao.llm.grounding import apply_grounding
+
+    text, report, action = apply_grounding(
+        answer="A total of 80 days.",
+        results=["employees accrue 25 days per year, plus 5 after three years"],
+        query="How many?",
+        mode="strict",
+        fallback="25 days per year",
+        repaired_answer="You accrue 25 days per year, plus 5 after three years of service.",
+    )
+    assert action == "repaired"
+    assert "80" not in text
+
+
+# ---------------------------------------------------------------------------
+# limitation 3: an agent can be wrong (make it visible, do not pretend to fix)
+# ---------------------------------------------------------------------------
+
+
+def test_cross_agent_disagreement_is_reported():
+    from alstom_ao.llm.grounding import check_agent_consistency
+
+    results = [
+        {"agent_id": "a1", "structured": {"balance": 1200.0}},
+        {"agent_id": "a2", "structured": {"balance": 1500.0}},
+    ]
+    check = check_agent_consistency(results, {"a1": "", "a2": ""})
+    assert not check.ok
+    assert check.disagreements[0]["metric"] == "balance"
+    assert set(check.disagreements[0]["agents"]) == {"a1", "a2"}
+
+
+def test_agreeing_agents_pass():
+    from alstom_ao.llm.grounding import check_agent_consistency
+
+    results = [
+        {"agent_id": "a1", "structured": {"balance": 1200.0}},
+        {"agent_id": "a2", "structured": {"balance": 1200.00}},
+    ]
+    assert check_agent_consistency(results, {"a1": "", "a2": ""}).ok
+
+
+def test_agent_prose_contradicting_its_own_structured_output_is_flagged():
+    from alstom_ao.llm.grounding import check_agent_consistency
+
+    results = [{"agent_id": "a1", "structured": {"balance": 1200.0}}]
+    check = check_agent_consistency(results, {"a1": "The vendor balance is 9500 units."})
+    assert "a1:9500" in check.text_contradicts_structured
+
+
+def test_prose_only_agents_are_not_flagged():
+    """No structured numbers means nothing to compare against: stay quiet."""
+
+    from alstom_ao.llm.grounding import check_agent_consistency
+
+    results = [{"agent_id": "a1", "structured": {}}]
+    assert check_agent_consistency(results, {"a1": "You get 25 days per year."}).ok
+
+
+def test_numeric_fields_flattens_nested_payloads():
+    from alstom_ao.llm.grounding import numeric_fields
+
+    flat = numeric_fields({"invoice": {"total": 1200.0, "lines": [{"qty": 3}]}, "paid": True})
+    assert flat == {"invoice.total": 1200.0, "invoice.lines.0.qty": 3.0}

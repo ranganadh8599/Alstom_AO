@@ -85,26 +85,55 @@ run it turned "25 days per calendar year" plus "5 days after three years" into
 "a total of **80 days**" — a number no agent ever reported.
 
 So every generated answer is verified deterministically before it reaches the
-user: each standalone number must already appear in an agent result, in the
-agent's structured output, or in the question itself.
+user: each number must appear in an agent result, the agent's structured output,
+or the question itself.
 
 | Mode | `AO_SYNTHESIS_GROUNDING` | Behaviour |
 |---|---|---|
 | off | `off` | no check |
 | warn | `warn` (default) | answer kept, caveat lists the ungrounded figures |
-| strict | `strict` | answer replaced by verbatim agent output plus a reason |
+| strict | `strict` | **repair once** → redact only the offending sentences → verbatim agent text as last resort |
 
-Every ungrounded figure also emits `synthesis.ungrounded` with the grounded and
-ungrounded sets, so drift is visible in the ledger and in metrics
-(`ao.synthesis.ungrounded`).
+In `strict`, one extra model call asks for a rewrite without the offending
+figures (`AO_SYNTHESIS_REPAIR_ATTEMPTS`, default 1). A repair that is degenerate
+or still ungrounded is discarded — it can never launder a fabricated figure into
+an accepted answer.
 
-What is deliberately *not* flagged: bare years (1900–2100, prose not quantity) and
-anything inside an identifier (`INV-2024-0912`, `v2.3.0`, `PO-7781`, `2024-Q3`).
-Matching is literal, so a model restating `4%` as `4.0%` would be flagged in
-`strict` mode — that is the trade-off for a check that cannot invent.
+### Matching rules
 
-The synthesizer prompt also gained explicit no-arithmetic and quote-verbatim
-rules, but those are defence in depth: the verifier is what makes the guarantee.
+Comparison is numeric, not textual:
+
+| Case | Verdict |
+|---|---|
+| `4%` vs `4.0%`, `25` vs `25.0`, `1,200` vs `1200` | same quantity |
+| `three years` vs `3 years` | same quantity |
+| `policy 4.2`, `section 3.1.4`, `§ 7` | document reference, ignored |
+| `INV-2024-0912`, `v2.3.0`, `PO-7781`, `2024-Q3` | identifier, ignored |
+| bare years 1900–2100 | prose, not a quantity |
+| `80` when agents reported `25` and `5` | **ungrounded** |
+
+The tolerance only absorbs float formatting (1e-9 relative); it is far too tight
+to hide real arithmetic.
+
+### Agent-side visibility
+
+Grounding compares the answer with the agent — it cannot detect a wrong agent.
+What it can do is surface the problem instead of silently trusting it:
+
+- **cross-agent disagreement** — two agents reporting different values for the
+  same structured metric emits `agents.inconsistent` and adds a caveat naming the
+  metric;
+- **prose vs structured** — a figure in an agent's text that its own structured
+  payload does not contain is recorded as `text_contradicts_structured`.
+
+Both require agents to return structured numbers; prose-only agents produce no
+check rather than noise.
+
+### Event and metrics
+
+`synthesis.ungrounded` (grounded + ungrounded sets + action taken),
+`agents.inconsistent`, and counters `ao.synthesis.ungrounded`,
+`ao.synthesis.repair_attempted`, `ao.agents.inconsistent`.
 
 ## Failure isolation
 

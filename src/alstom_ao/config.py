@@ -62,6 +62,8 @@ class Settings(BaseSettings):
     max_a2a_depth: int = 3
     # Numeric grounding for synthesized answers: off | warn | strict.
     synthesis_grounding: str = "warn"
+    # In strict mode, one rewrite attempt before redacting (0 disables).
+    synthesis_repair_attempts: int = 1
     planner_min_confidence: float = 0.35
     planner_max_agents: int = 4
 

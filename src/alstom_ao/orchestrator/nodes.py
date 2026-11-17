@@ -36,7 +36,7 @@ from alstom_ao.domain.models import (
 )
 from alstom_ao.errors import AppError, BudgetExceededError
 from alstom_ao.llm.gateway import BudgetDecision, BudgetState
-from alstom_ao.llm.grounding import apply_grounding
+from alstom_ao.llm.grounding import apply_grounding, check_agent_consistency, check_grounding, repair_prompt
 from alstom_ao.llm.prompts import SYNTHESIZER_SYSTEM, build_synthesizer_user_prompt
 from alstom_ao.observability.alerts import emit_alert
 from alstom_ao.observability.metrics import metrics
@@ -711,12 +711,37 @@ async def synthesize_node(state: OrchestratorState, config: RunnableConfig) -> d
             # actually reported. "off" skips the check entirely.
             grounding_mode = runtime.services.settings.synthesis_grounding
             if not runtime.gateway.is_mock and grounding_mode != "off":
+                sources = [_agent_text(result) for result in results]
+                repaired: str | None = None
+
+                # Strict mode gets one cheap repair attempt before losing content:
+                # most invented figures are a prompt-following lapse, not an
+                # inability, and a rewrite usually keeps the useful text.
+                attempts = runtime.services.settings.synthesis_repair_attempts if grounding_mode == "strict" else 0
+                preliminary = check_grounding(response, sources, query=state.get("query", ""))
+                if not preliminary.ok and attempts > 0:
+                    try:
+                        fix = await runtime.gateway.complete_text(
+                            system=SYNTHESIZER_SYSTEM,
+                            user=repair_prompt(
+                                answer=response,
+                                ungrounded=sorted(preliminary.ungrounded),
+                                sources=sources,
+                            ),
+                        )
+                        if fix.text.strip():
+                            repaired = fix.text.strip()
+                            metrics.incr("ao.synthesis.repair_attempted")
+                    except Exception as exc:  # a failed repair must not fail the run
+                        logger.warning("Grounding repair attempt failed: %s", exc)
+
                 response, report, grounding_note = apply_grounding(
                     answer=response,
-                    results=[_agent_text(result) for result in results],
+                    results=sources,
                     query=state.get("query", ""),
                     mode=grounding_mode,
                     fallback=_compose_fallback(results),
+                    repaired_answer=repaired,
                 )
                 if not report.ok:
                     metrics.incr("ao.synthesis.ungrounded")
@@ -730,6 +755,32 @@ async def synthesize_node(state: OrchestratorState, config: RunnableConfig) -> d
                             "action": grounding_note,
                         },
                     )
+
+                # An agent can be wrong; grounding cannot see that. What it can do
+                # is surface disagreement instead of silently trusting one agent.
+                agent_check = check_agent_consistency(
+                    [result.model_dump(mode="json") for result in results],
+                    {result.agent_id: _agent_text(result) for result in results},
+                )
+                if not agent_check.ok:
+                    metrics.incr("ao.agents.inconsistent")
+                    await runtime.tracer.record(
+                        TraceAction.AGENTS_INCONSISTENT,
+                        TraceStatus.SUCCEEDED,
+                        output={
+                            "prose_vs_structured": agent_check.text_contradicts_structured,
+                            "disagreements": agent_check.disagreements,
+                        },
+                    )
+                    if agent_check.disagreements:
+                        names = "; ".join(
+                            f"{item['metric']} differs across {', '.join(sorted(item['agents']))}"
+                            for item in agent_check.disagreements
+                        )
+                        response += (
+                            f"\n\n> ⚠️ Agents disagreed on reported values: {names}. "
+                            "Verify with the owning team before acting."
+                        )
 
         if failures:
             response += (

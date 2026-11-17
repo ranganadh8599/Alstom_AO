@@ -36,7 +36,7 @@ from alstom_ao.errors import (
     NotFoundError,
     UpstreamUnavailableError,
 )
-from alstom_ao.llm.gateway import LLMBudget, build_gateway
+from alstom_ao.llm.gateway import BudgetState, LLMBudget, build_gateway
 from alstom_ao.observability.metrics import metrics
 from alstom_ao.observability.tracing import new_trace_id
 from alstom_ao.orchestrator.runtime import NodeServices, RunRuntime
@@ -180,6 +180,7 @@ class RunService:
         trace_id: str | None = None,
         workflow_id: str | None = None,
         idempotency_key: str | None = None,
+        hop_depth: int = 0,
     ) -> RunResult:
         settings = self.settings
         started = time.perf_counter()
@@ -250,6 +251,7 @@ class RunService:
             "use_case": use_case,
             "conversation": conversation or [],
             "identity": identity.model_dump(mode="json"),
+            "hop_depth": max(0, hop_depth),
             "status": str(RunStatus.PLANNING),
             "results": [],
             "failures": [],
@@ -307,6 +309,17 @@ class RunService:
         if approval is None:
             raise NotFoundError(f"Run '{run_id}' has no approval request.")
         await self.ensure_resumable(run_id)
+
+        # Hard tier at the gate: a paused run that already spent its budget must
+        # not be resumed into more spending, even with a human approval.
+        carried = LLMBudget.from_snapshot(record.usage or {}, self.settings)
+        decision = carried.evaluate()
+        if decision.state is BudgetState.EXCEEDED:
+            metrics.incr("ao.budget.resume_blocked")
+            raise BudgetExceededError(
+                f"Run '{run_id}' exhausted its {decision.dimension} budget "
+                f"({decision.used:g}/{decision.limit:g}) and cannot be resumed."
+            )
 
         started = time.perf_counter()
         runtime = self._build_runtime(

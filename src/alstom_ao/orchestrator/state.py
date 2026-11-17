@@ -21,6 +21,10 @@ class OrchestratorState(TypedDict, total=False):
 
     identity: dict[str, Any]
 
+    # Inbound A2A delegation depth (0 for a UI-originated request). Guards
+    # runaway agent-to-agent chains.
+    hop_depth: int
+
     catalog: list[dict[str, Any]]
     plan: dict[str, Any]
     agent_snapshots: list[dict[str, Any]]
@@ -43,3 +47,15 @@ class OrchestratorState(TypedDict, total=False):
 def selected_ids(state: OrchestratorState) -> list[str]:
     plan = state.get("plan") or {}
     return [item["agent_id"] for item in plan.get("selected_agents", [])]
+
+
+def hops_remaining(state: OrchestratorState) -> int:
+    """Agent invocations still allowed, derived from the persisted budget."""
+
+    usage = state.get("usage") or {}
+    limits = usage.get("limits") or {}
+    max_hops = int(limits.get("max_hops") or 0)
+    used = int(usage.get("hops") or 0)
+    if max_hops <= 0:
+        return 10**6
+    return max(0, max_hops - used)

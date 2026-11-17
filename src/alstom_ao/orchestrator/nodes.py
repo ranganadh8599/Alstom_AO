@@ -33,10 +33,13 @@ from alstom_ao.domain.models import (
     PolicyDecision,
     TraceContext,
 )
-from alstom_ao.errors import AppError
+from alstom_ao.errors import AppError, BudgetExceededError
+from alstom_ao.llm.gateway import BudgetDecision, BudgetState
 from alstom_ao.llm.prompts import SYNTHESIZER_SYSTEM, build_synthesizer_user_prompt
+from alstom_ao.observability.alerts import emit_alert
+from alstom_ao.observability.metrics import metrics
 from alstom_ao.orchestrator.runtime import RunRuntime, runtime_from
-from alstom_ao.orchestrator.state import OrchestratorState
+from alstom_ao.orchestrator.state import OrchestratorState, hops_remaining
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +66,20 @@ ALL_FAILED_TEMPLATE = (
     "I couldn't complete the request. {count} agent(s) were selected but none returned a usable answer{detail}. "
     "Please try again later or contact the platform team if this persists."
 )
+BUDGET_MESSAGE = (
+    "This request exceeded the orchestration budget (model calls, tokens or agent hops). "
+    "No further agents were called. Please narrow the request or ask the platform team to raise the limit."
+)
+HOP_LIMIT_TEMPLATE = (
+    "This request stopped because the agent delegation limit was reached "
+    "(depth {depth}, limit {limit}). No further agents were called. "
+    "If this came from a legitimate workflow, ask the platform team to raise the hop limit."
+)
+BUDGET_PARTIAL_NOTE = (
+    "\n\n> Budget note: this answer was assembled from completed agent results without the final "
+    "model synthesis, because the run reached its {dimension} limit. Results are complete; wording "
+    "is not polished."
+)
 
 
 def _settings(runtime: RunRuntime) -> Settings:
@@ -71,6 +88,52 @@ def _settings(runtime: RunRuntime) -> Settings:
 
 def _identity(state: OrchestratorState) -> IdentityContext:
     return IdentityContext.model_validate(state["identity"])
+
+
+async def _apply_soft_tier(
+    runtime: RunRuntime,
+    decision: BudgetDecision,
+    identity: IdentityContext,
+    state: OrchestratorState,
+) -> None:
+    """Soft crossing: record, alert once, and downgrade the model if configured.
+
+    Never raises and never blocks: this is the tier that keeps long A2A work
+    alive instead of cascading a failure through the graph.
+    """
+
+    settings = runtime.services.settings
+    first = runtime.budget.claim_warning(decision)
+    if not first:
+        return
+
+    downgraded = False
+    if settings.budget_degrade_model:
+        downgraded = runtime.gateway.downgrade(settings.budget_degrade_model)
+
+    await runtime.tracer.record(
+        TraceAction.BUDGET_DEGRADED if downgraded else TraceAction.BUDGET_WARNING,
+        TraceStatus.SUCCEEDED,
+        output={
+            "detail": decision.describe(),
+            "dimension": decision.dimension,
+            "percent": round(decision.percent, 4),
+            "model": runtime.gateway.current_model(),
+            "downgraded": downgraded,
+        },
+        metadata={"usage": runtime.budget.snapshot()},
+    )
+
+    emit_alert(
+        settings,
+        decision=decision,
+        run_id=runtime.run_id,
+        workflow_id=runtime.workflow_id,
+        user_id=identity.user.user_id,
+        environment=runtime.environment,
+        model=runtime.gateway.current_model(),
+    )
+    metrics.incr("ao.budget.warning")
 
 
 # ---------------------------------------------------------------------------
@@ -356,6 +419,70 @@ async def execute_node(state: OrchestratorState, config: RunnableConfig) -> dict
     ordered = sorted(plan.selected_agents, key=lambda agent: agent.priority)
     order_index = {agent.agent_id: index for index, agent in enumerate(ordered)}
 
+    # --- delegation-depth guard -------------------------------------------
+    # An inbound A2A call that is already N deep must not fan out again; that is
+    # how agent-to-agent loops burn budget before dollars ever register.
+    incoming_depth = int(state.get("hop_depth") or 0)
+    if settings.max_a2a_depth > 0 and incoming_depth >= settings.max_a2a_depth:
+        await runtime.tracer.record(
+            TraceAction.HOP_LIMIT_HIT,
+            TraceStatus.DENIED,
+            output={"hop_depth": incoming_depth, "max_a2a_depth": settings.max_a2a_depth},
+        )
+        return {
+            "status": str(RunStatus.FAILED),
+            "response": HOP_LIMIT_TEMPLATE.format(depth=incoming_depth, limit=settings.max_a2a_depth),
+            "error": "hop_limit_exceeded",
+            "usage": runtime.budget.snapshot(),
+        }
+
+    # --- per-run hop cap ---------------------------------------------------
+    remaining_hops = hops_remaining(state)
+    if remaining_hops <= 0:
+        await runtime.tracer.record(
+            TraceAction.HOP_LIMIT_HIT,
+            TraceStatus.DENIED,
+            output={"reason": "max_agent_hops", "max_agent_hops": settings.max_agent_hops},
+        )
+        return {
+            "status": str(RunStatus.FAILED),
+            "response": HOP_LIMIT_TEMPLATE.format(depth=0, limit=settings.max_agent_hops),
+            "error": "hop_limit_exceeded",
+            "usage": runtime.budget.snapshot(),
+        }
+    if len(ordered) > remaining_hops:
+        # Truncate the plan, not the budget: the highest-priority agents run.
+        dropped = [agent.agent_id for agent in ordered[remaining_hops:]]
+        ordered = ordered[:remaining_hops]
+        plan.selected_agents = ordered
+        order_index = {agent.agent_id: index for index, agent in enumerate(ordered)}
+        await runtime.tracer.record(
+            TraceAction.HOP_LIMIT_HIT,
+            TraceStatus.SKIPPED,
+            output={"max_agent_hops": settings.max_agent_hops, "skipped_agents": dropped},
+        )
+
+    # --- budget tier: warn/degrade or block new work ----------------------
+    decision = runtime.budget.evaluate()
+    if decision.state is BudgetState.EXCEEDED:
+        # Root/work level: starting fresh agent work here would only deepen the
+        # overflow. Nothing has been invoked yet, so fail cleanly with a budget
+        # message instead of a half-executed graph.
+        await runtime.tracer.record(
+            TraceAction.BUDGET_EXCEEDED,
+            TraceStatus.DENIED,
+            output={"detail": decision.describe(), "before": "agent_execution"},
+            metadata={"usage": runtime.budget.snapshot()},
+        )
+        return {
+            "status": str(RunStatus.FAILED),
+            "response": BUDGET_MESSAGE,
+            "error": "budget_exceeded",
+            "usage": runtime.budget.snapshot(),
+        }
+    if decision.state is BudgetState.WARN:
+        await _apply_soft_tier(runtime, decision, identity, state)
+
     async def run_one(planned) -> tuple[InvocationResult | None, dict[str, Any] | None]:
         card = cards.get(planned.agent_id)
         if card is None:
@@ -401,6 +528,7 @@ async def execute_node(state: OrchestratorState, config: RunnableConfig) -> dict
         )
 
         async with semaphore:
+            runtime.budget.record_hop()
             async with runtime.tracer.span(
                 f"agent.{card.agent_id}",
                 as_type="agent",
@@ -484,6 +612,8 @@ async def execute_node(state: OrchestratorState, config: RunnableConfig) -> dict
         "results": results,
         "failures": failures,
         "executed_agents": [item["agent_id"] for item in results],
+        # Reflect hop-cap truncation in the persisted plan.
+        "plan": plan.model_dump(mode="json"),
         "usage": runtime.budget.snapshot(),
     }
 
@@ -516,25 +646,49 @@ async def synthesize_node(state: OrchestratorState, config: RunnableConfig) -> d
             "usage": runtime.budget.snapshot(),
         }
 
+    budget_note = ""
     async with runtime.tracer.span("orchestrator.synthesize", input={"result_count": len(results)}) as observation:
         if runtime.gateway.is_mock:
             response = _compose_fallback(results)
         else:
-            try:
-                identity = _identity(state)
-                llm_result = await runtime.gateway.complete_text(
-                    system=SYNTHESIZER_SYSTEM,
-                    user=build_synthesizer_user_prompt(
-                        query=state["query"],
-                        results=[result.model_dump(mode="json") for result in results],
-                        failures=failures,
-                        identity_label=f"{identity.user.user_id} ({', '.join(identity.user.roles)})",
-                    ),
-                )
-                response = llm_result.text.strip() or _compose_fallback(results)
-            except Exception as exc:
-                logger.warning("Synthesis failed, falling back to concatenation: %s", exc)
+            decision = runtime.budget.evaluate()
+            if decision.state is BudgetState.EXCEEDED:
+                # Agent work is already paid for and complete. Do not discard it
+                # just because the synthesis call cannot be afforded - that is the
+                # cascade this design exists to prevent.
                 response = _compose_fallback(results)
+                budget_note = BUDGET_PARTIAL_NOTE.format(dimension=decision.dimension or "budget")
+                await runtime.tracer.record(
+                    TraceAction.BUDGET_EXCEEDED,
+                    TraceStatus.SKIPPED,
+                    output={"detail": decision.describe(), "skipped": "llm_synthesis"},
+                    metadata={"usage": runtime.budget.snapshot()},
+                )
+                metrics.incr("ao.budget.synthesis_skipped")
+            else:
+                if decision.state is BudgetState.WARN:
+                    await _apply_soft_tier(runtime, decision, _identity(state), state)
+                try:
+                    identity = _identity(state)
+                    llm_result = await runtime.gateway.complete_text(
+                        system=SYNTHESIZER_SYSTEM,
+                        user=build_synthesizer_user_prompt(
+                            query=state["query"],
+                            results=[result.model_dump(mode="json") for result in results],
+                            failures=failures,
+                            identity_label=f"{identity.user.user_id} ({', '.join(identity.user.roles)})",
+                        ),
+                    )
+                    response = llm_result.text.strip() or _compose_fallback(results)
+                except BudgetExceededError:
+                    # Crossed the cap between the check and the call: degrade, do not fail.
+                    logger.warning("Synthesis skipped by budget limit")
+                    response = _compose_fallback(results)
+                    budget_note = BUDGET_PARTIAL_NOTE.format(dimension="budget")
+                    metrics.incr("ao.budget.synthesis_skipped")
+                except Exception as exc:
+                    logger.warning("Synthesis failed, falling back to concatenation: %s", exc)
+                    response = _compose_fallback(results)
 
         if failures:
             response += (
@@ -542,7 +696,14 @@ async def synthesize_node(state: OrchestratorState, config: RunnableConfig) -> d
                 + ", ".join(failure.get("agent_name") or failure.get("agent_id", "unknown") for failure in failures)
                 + "."
             )
-        observation.update(output={"response": response[:2000], "failures": len(failures)})
+        response += budget_note
+        observation.update(
+            output={
+                "response": response[:2000],
+                "failures": len(failures),
+                "budget_limited": bool(budget_note),
+            }
+        )
 
     await runtime.tracer.record(
         TraceAction.SYNTHESIS_COMPLETED,

@@ -31,7 +31,7 @@ from alstom_ao.api.schemas import (
 )
 from alstom_ao.errors import InputValidationError
 from alstom_ao.orchestrator.service import RunService
-from alstom_ao.security.identity import HEADER_IDEMPOTENCY_KEY
+from alstom_ao.security.identity import HEADER_IDEMPOTENCY_KEY, hop_depth_from_headers
 
 router = APIRouter(prefix="/v1", tags=["openai-compat"])
 
@@ -164,6 +164,7 @@ async def chat_completions(
         trace_id=request.headers.get("x-trace-id"),
         workflow_id=request.headers.get("x-workflow-id"),
         idempotency_key=validate_idempotency_key(request.headers.get(HEADER_IDEMPOTENCY_KEY)),
+        hop_depth=hop_depth_from_headers(request.headers),
     )
 
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:20]}"

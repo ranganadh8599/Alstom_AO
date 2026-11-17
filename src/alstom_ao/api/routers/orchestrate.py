@@ -15,7 +15,7 @@ from alstom_ao.api.schemas import (
 from alstom_ao.domain.models import IdentityContext, RunRecord
 from alstom_ao.orchestrator.service import RunService
 from alstom_ao.security.access import require_run_access
-from alstom_ao.security.identity import HEADER_IDEMPOTENCY_KEY
+from alstom_ao.security.identity import HEADER_IDEMPOTENCY_KEY, hop_depth_from_headers
 
 router = APIRouter(prefix="/v1", tags=["orchestration"])
 
@@ -36,6 +36,7 @@ async def orchestrate(
         trace_id=request.headers.get("x-trace-id"),
         workflow_id=request.headers.get("x-workflow-id"),
         idempotency_key=validate_idempotency_key(request.headers.get(HEADER_IDEMPOTENCY_KEY)),
+        hop_depth=hop_depth_from_headers(request.headers),
     )
     return OrchestrateResponse(run=result)
 

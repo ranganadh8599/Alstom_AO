@@ -94,6 +94,10 @@ class ActionType(StrEnum):
 class TraceAction(StrEnum):
     RUN_STARTED = "run.started"
     INPUT_VALIDATED = "input.validated"
+    BUDGET_WARNING = "budget.warning"
+    BUDGET_DEGRADED = "budget.degraded"
+    BUDGET_EXCEEDED = "budget.exceeded"
+    HOP_LIMIT_HIT = "hop.limit_hit"
     PLAN_CREATED = "plan.created"
     NO_MATCH = "plan.no_match"
     POLICY_EVALUATED = "policy.evaluated"

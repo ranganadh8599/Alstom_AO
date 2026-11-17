@@ -32,6 +32,8 @@ HEADER_TRACE_ID = "x-trace-id"
 HEADER_WORKFLOW_ID = "x-workflow-id"
 HEADER_RUN_ID = "x-run-id"
 HEADER_IDEMPOTENCY_KEY = "idempotency-key"
+HEADER_HOP_DEPTH = "x-alstom-depth"
+HEADER_HOP_DEPTH_ALT = "x-a2a-hop"
 
 # Headers propagated to downstream A2A agents in addition to the metadata payload.
 PROPAGATION_PREFIX = "x-alstom-"
@@ -101,6 +103,23 @@ def extract_identity(headers: Mapping[str, str], settings: Settings, *, client_i
 
 def use_case_from_headers(headers: Mapping[str, str]) -> str:
     return (_header(headers, HEADER_USE_CASE) or "general").strip()[:128]
+
+
+def hop_depth_from_headers(headers: Mapping[str, str]) -> int:
+    """Inbound A2A delegation depth. 0 means a UI-originated request.
+
+    A peer that delegates to us sets ``X-Alstom-Depth`` (or ``X-A2A-Hop``) to its
+    own depth + 1, which lets the graph refuse runaway agent-to-agent chains
+    before any tokens are spent.
+    """
+
+    raw = _header(headers, HEADER_HOP_DEPTH) or _header(headers, HEADER_HOP_DEPTH_ALT)
+    if not raw:
+        return 0
+    try:
+        return max(0, min(int(str(raw).strip()), 100))
+    except (TypeError, ValueError):
+        return 0
 
 
 def propagation_headers(trace: dict, identity: IdentityContext) -> dict[str, str]:

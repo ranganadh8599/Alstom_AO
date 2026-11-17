@@ -3,7 +3,7 @@
 This is the checklist the platform was audited against, with what is covered and
 what is deliberately left to the deployment.
 
-Audit method: static analysis (`ruff`, `mypy`), 86 hermetic tests, a live
+Audit method: static analysis (`ruff`, `mypy`), 101 hermetic tests, a live
 end-to-end demo, real OPA evaluation, a real Docker build and container health
 check, a Postgres + OPA + mock-agent Compose stack, and adversarial probes that
 tried to break the invariants below.
@@ -117,7 +117,7 @@ the operator-visible symptom is a stuck run — use Postgres in production.
 ### Hermetic suite
 
 ```
-86 tests, SQLite + fake A2A network + mock LLM + fake LiteLLM gateway
+101 tests, SQLite + fake A2A network + mock/scripted LLM + fake LiteLLM gateway
 coverage ~82% of src/alstom_ao
 ruff: clean
 mermaid diagrams: validated with mermaid.parse (4/4)
@@ -157,7 +157,8 @@ add them only with a concrete requirement.
 |---|---|---|
 | Deterministic mid-run node replay | loomvault | LangGraph checkpoints cover resume; full journal replay is a different execution model |
 | Content-addressed LLM response cache | loomvault | Cost optimisation; add when spend justifies it |
-| Budget `DEGRADE`/`TRUNCATE` strategies | loomvault | We fail closed on budget; degrade needs model-tier policy |
+| Budget `DEGRADE`/`TRUNCATE` strategies | loomvault | Replaced, not copied: we implement soft-alert → model downgrade → hard-gate ([budgets.md](budgets.md)) and reject `TRUNCATE`, which silently changes answer quality. Worth noting: loomvault documents `TRUNCATE` but its engine never implements it, and its `WARN` sets the degrade flag, so only `FAIL` and `DEGRADE` are real there. |
+| Mid-stream pause on budget exhaustion | — | Rejected: a frozen A2A task needs a long-lived state machine across callbacks and timeouts. A hard gate at the graph boundary is cheaper and safer. |
 | Leases, heartbeats, dead-letter queues | orloj | Single-process worker model; needed only for distributed workers |
 | SSO (JWT/Azure AD) | advanced template | The UI owns authentication; add a verifier if agents are exposed directly |
 | Team/organisation model | advanced template | Tenant id covers isolation; a team entity is a product decision |

@@ -47,7 +47,8 @@ consequential**, and traces every hop to **Langfuse** with dual identity.
 | Dual identity | User headers + service identity preserved into every agent call and trace event |
 | Access control | Runs/approvals are owner-scoped; approvers are tenant-scoped; platform admins global |
 | Idempotent submissions | `Idempotency-Key` header: a retried POST returns the first run, never re-executes |
-| Cost control | Per-run token/call/volume/cost budget in the LLM gateway |
+| Tiered budgets | soft alert at 80% → model downgrade → hard gate that still returns collected agent results; details in [docs/budgets.md](docs/budgets.md) |
+| Loop protection | per-run agent-hop cap and inbound A2A depth cap, independent of spend |
 | Trace retention | `scripts/prune_trace_events.py` with dry-run, batching and stats |
 | Virtual model | OpenAI-compatible `/v1/chat/completions` (streaming and non-streaming) |
 | Modular adapters | `AgentAdapter` ABC; A2A today, MCP/REST later without touching the orchestrator |
@@ -346,6 +347,11 @@ Highlights:
 | `AO_LLM_MODE` | `mock` | `mock` or `litellm` |
 | `AO_LLM_MODEL` | `openai/gpt-4o-mini` | Any LiteLLM model id |
 | `AO_LLM_MAX_COST_USD_PER_RUN` | `0.50` | Budget guard |
+| `AO_BUDGET_SOFT_THRESHOLD` | `0.8` | Warn + optional downgrade at this fraction |
+| `AO_BUDGET_DEGRADE_MODEL` | unset | Cheaper model after a soft crossing |
+| `AO_BUDGET_ALERT_WEBHOOK` | unset | Slack-compatible alert URL |
+| `AO_MAX_AGENT_HOPS` | `8` | Agent calls per run |
+| `AO_MAX_A2A_DEPTH` | `3` | Inbound delegation depth before fan-out is refused |
 | `AO_POLICY_MODE` | `observe` | `observe` or `enforce` |
 | `AO_A2A_ROUTING` | `direct` | `direct` or `litellm_proxy` (agent gateway) |
 | `AO_LITELLM_PROXY_URL` | `http://localhost:4000` | LiteLLM agent gateway base URL |

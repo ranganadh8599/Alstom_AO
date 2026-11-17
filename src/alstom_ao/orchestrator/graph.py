@@ -59,6 +59,22 @@ def _route_after_approval(state: OrchestratorState) -> str:
     return "execute"
 
 
+def _route_after_execute(state: OrchestratorState) -> str:
+    """Skip synthesis when execution already ended terminally.
+
+    A hop-limit or exhausted-budget stop must keep its own explanation; running
+    synthesis would overwrite it with a generic "no usable answer" message. The
+    run still passes through ``finalize`` so the audit ledger has a terminal
+    event.
+    """
+
+    if state.get("error") in {"hop_limit_exceeded", "budget_exceeded"}:
+        return "finalize"
+    if state.get("status") == str(RunStatus.FAILED):
+        return "finalize"
+    return "synthesize"
+
+
 def build_graph(services: NodeServices, checkpointer: Any):
     graph = StateGraph(OrchestratorState)
 
@@ -75,7 +91,7 @@ def build_graph(services: NodeServices, checkpointer: Any):
     graph.add_conditional_edges("plan", _route_after_plan, {"authorize": "authorize", END: END})
     graph.add_conditional_edges("authorize", _route_after_authorize, {"approval": "approval", END: END})
     graph.add_conditional_edges("approval", _route_after_approval, {"execute": "execute", END: END})
-    graph.add_edge("execute", "synthesize")
+    graph.add_conditional_edges("execute", _route_after_execute, {"synthesize": "synthesize", "finalize": "finalize"})
     graph.add_edge("synthesize", "finalize")
     graph.add_edge("finalize", END)
 

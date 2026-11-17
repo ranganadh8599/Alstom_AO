@@ -14,6 +14,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from enum import StrEnum
 
 from alstom_ao.config import Settings
 from alstom_ao.errors import BudgetExceededError, UpstreamUnavailableError
@@ -37,8 +38,51 @@ class LLMResult:
         return self.prompt_tokens + self.completion_tokens
 
 
+class BudgetState(StrEnum):
+    OK = "ok"
+    WARN = "warn"
+    EXCEEDED = "exceeded"
+
+
+@dataclass
+class BudgetDecision:
+    """Outcome of evaluating a budget at a decision point.
+
+    Tiered semantics (deliberately not loomvault's four-strategy model):
+
+    * ``OK``       nothing crossed
+    * ``WARN``     soft threshold (default 80%) crossed: alert, optionally
+                   downgrade the model, but keep running
+    * ``EXCEEDED`` hard limit crossed: block **new** work at the root, let
+                   in-flight agent calls finish so state is never half-broken
+    """
+
+    state: BudgetState = BudgetState.OK
+    dimension: str | None = None
+    used: float = 0.0
+    limit: float = 0.0
+    percent: float = 0.0
+
+    @property
+    def can_start_new_work(self) -> bool:
+        return self.state != BudgetState.EXCEEDED
+
+    @property
+    def should_degrade(self) -> bool:
+        return self.state == BudgetState.WARN
+
+    def describe(self) -> str:
+        if self.state == BudgetState.OK:
+            return "within budget"
+        return f"{self.dimension} {self.used:g}/{self.limit:g} ({self.percent:.0%})"
+
+
 class LLMBudget:
-    """Per-run budget. Charges are monotonic; exceeding a limit raises."""
+    """Per-run budget with tiered evaluation.
+
+    ``ensure_can_call`` is the *root entry* gate and raises on a hard limit.
+    ``evaluate`` is the *decision point* used mid-run, which never raises.
+    """
 
     def __init__(
         self,
@@ -46,27 +90,83 @@ class LLMBudget:
         max_calls: int,
         max_tokens: int,
         max_cost_usd: float,
+        max_hops: int = 8,
+        soft_threshold: float = 0.8,
     ) -> None:
         self.max_calls = max_calls
         self.max_tokens = max_tokens
         self.max_cost_usd = max_cost_usd
+        self.max_hops = max_hops
+        self.soft_threshold = min(max(soft_threshold, 0.1), 1.0)
         self.calls = 0
         self.prompt_tokens = 0
         self.completion_tokens = 0
         self.cost_usd = 0.0
         self.models: dict[str, int] = {}
+        self.hops = 0
+        self.warned: set[str] = set()
 
     @property
     def total_tokens(self) -> int:
         return self.prompt_tokens + self.completion_tokens
 
+    # -- evaluation --------------------------------------------------------
+    def _dimensions(self) -> list[tuple[str, float, float]]:
+        """(name, used, limit) for every constrained dimension."""
+
+        dims: list[tuple[str, float, float]] = []
+        if self.max_calls > 0:
+            dims.append(("llm_calls", float(self.calls), float(self.max_calls)))
+        if self.max_tokens > 0:
+            dims.append(("tokens", float(self.total_tokens), float(self.max_tokens)))
+        if self.max_cost_usd > 0:
+            dims.append(("cost_usd", float(self.cost_usd), float(self.max_cost_usd)))
+        if self.max_hops > 0:
+            dims.append(("agent_hops", float(self.hops), float(self.max_hops)))
+        return dims
+
+    def evaluate(self) -> BudgetDecision:
+        """Hard limits first, then soft thresholds. Pure, never raises."""
+
+        dims = self._dimensions()
+        for name, used, limit in dims:
+            if limit > 0 and used >= limit:
+                return BudgetDecision(
+                    state=BudgetState.EXCEEDED,
+                    dimension=name,
+                    used=used,
+                    limit=limit,
+                    percent=used / limit,
+                )
+        for name, used, limit in dims:
+            if limit > 0 and used / limit >= self.soft_threshold:
+                return BudgetDecision(
+                    state=BudgetState.WARN,
+                    dimension=name,
+                    used=used,
+                    limit=limit,
+                    percent=used / limit,
+                )
+        return BudgetDecision()
+
+    def claim_warning(self, decision: BudgetDecision) -> bool:
+        """One alert per dimension per run, not per token."""
+
+        key = decision.dimension or "unknown"
+        if key in self.warned:
+            return False
+        self.warned.add(key)
+        return True
+
     def ensure_can_call(self) -> None:
-        if self.calls >= self.max_calls:
-            raise BudgetExceededError(f"Run exceeded the LLM call budget ({self.max_calls}).")
-        if self.total_tokens >= self.max_tokens:
-            raise BudgetExceededError(f"Run exceeded the token budget ({self.max_tokens}).")
-        if self.cost_usd >= self.max_cost_usd:
-            raise BudgetExceededError(f"Run exceeded the cost budget (${self.max_cost_usd:.2f}).")
+        decision = self.evaluate()
+        if decision.state == BudgetState.EXCEEDED:
+            raise BudgetExceededError(
+                f"Run exceeded its {decision.dimension} budget ({decision.used:g}/{decision.limit:g})."
+            )
+
+    def record_hop(self) -> None:
+        self.hops += 1
 
     def charge(self, result: LLMResult) -> None:
         self.calls += 1
@@ -82,11 +182,14 @@ class LLMBudget:
             "completion_tokens": self.completion_tokens,
             "total_tokens": self.total_tokens,
             "cost_usd": round(self.cost_usd, 6),
+            "hops": self.hops,
             "models": dict(self.models),
             "limits": {
                 "max_calls": self.max_calls,
                 "max_tokens": self.max_tokens,
                 "max_cost_usd": self.max_cost_usd,
+                "max_hops": self.max_hops,
+                "soft_threshold": self.soft_threshold,
             },
         }
 
@@ -96,11 +199,14 @@ class LLMBudget:
             max_calls=settings.llm_max_calls_per_run,
             max_tokens=settings.llm_max_tokens_per_run,
             max_cost_usd=settings.llm_max_cost_usd_per_run,
+            max_hops=settings.max_agent_hops,
+            soft_threshold=settings.budget_soft_threshold,
         )
         budget.calls = int(snapshot.get("calls", 0))
         budget.prompt_tokens = int(snapshot.get("prompt_tokens", 0))
         budget.completion_tokens = int(snapshot.get("completion_tokens", 0))
         budget.cost_usd = float(snapshot.get("cost_usd", 0.0))
+        budget.hops = int(snapshot.get("hops", 0))
         budget.models = dict(snapshot.get("models", {}))
         return budget
 
@@ -111,6 +217,18 @@ class ModelGateway(ABC):
     def __init__(self, settings: Settings, budget: LLMBudget) -> None:
         self.settings = settings
         self.budget = budget
+        self.model = settings.llm_model
+
+    def current_model(self) -> str:
+        return self.model
+
+    def downgrade(self, model: str | None) -> bool:
+        """Switch to a cheaper model for the rest of the run. False when unsupported."""
+
+        if not model or model == self.model:
+            return False
+        self.model = model
+        return True
 
     @abstractmethod
     async def complete_text(
@@ -209,7 +327,7 @@ class LiteLLMGateway(ModelGateway):
         import litellm  # imported lazily: keeps startup fast and tests hermetic
 
         kwargs: dict = {
-            "model": self.settings.llm_model,
+            "model": self.model,
             "messages": messages,
             "temperature": self.settings.llm_temperature if temperature is None else temperature,
             "max_tokens": max_tokens or self.settings.llm_max_tokens,
@@ -231,7 +349,7 @@ class LiteLLMGateway(ModelGateway):
         usage = getattr(response, "usage", None)
         prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
         completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
-        model = getattr(response, "model", None) or self.settings.llm_model
+        model = getattr(response, "model", None) or self.model
         cost = 0.0
         try:
             cost = float(response._hidden_params.get("response_cost") or 0.0)

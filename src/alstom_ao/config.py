@@ -50,6 +50,16 @@ class Settings(BaseSettings):
     llm_max_tokens_per_run: int = 20_000
     llm_max_cost_usd_per_run: float = 0.50
     llm_max_calls_per_run: int = 12
+    # Tiered budget: warn (and optionally downgrade) at this fraction of any limit.
+    budget_soft_threshold: float = 0.8
+    # Cheaper model used for the rest of the run once the soft threshold is crossed.
+    budget_degrade_model: str | None = None
+    # Fire-and-forget alert on soft/hard crossings (Slack-compatible incoming webhook).
+    budget_alert_webhook: str | None = None
+    budget_alert_timeout_seconds: float = 3.0
+    # Runaway-loop protection: caps that bite long before dollars do.
+    max_agent_hops: int = 8
+    max_a2a_depth: int = 3
     planner_min_confidence: float = 0.35
     planner_max_agents: int = 4
 

@@ -152,3 +152,115 @@ async def test_expired_approval_cannot_be_decided(client, user_headers, approver
     )
     assert decision.status_code == 409
     assert decision.json()["error"]["code"] == "approval_expired"
+# ---------------------------------------------------------------------------
+# planner approval opinion must not gate read-only plans
+# ---------------------------------------------------------------------------
+
+
+def _assessment(plan_requires: bool, action, query: str = "", **card_overrides):
+    from alstom_ao.approvals.service import assess_approval
+    from alstom_ao.config import Settings
+    from alstom_ao.domain.models import (
+        AgentCard,
+        AgentPermissions,
+        IdentityContext,
+        Plan,
+        PlannedAgent,
+        ServiceIdentity,
+        UserIdentity,
+    )
+
+    settings = Settings(environment="test", database_url="sqlite+aiosqlite:///:memory:")
+    card = AgentCard(
+        agent_id="finance-invoice-auditor",
+        name="Finance",
+        description="Audits invoices and detects duplicates for the finance team.",
+        endpoint="http://test/agents/finance",
+        capabilities=["invoice audit"],
+        permissions=AgentPermissions(
+            allowed_roles=["user"],
+            allowed_actions=["read", "query", "analyze", "write"],
+            **{"requires_approval_for": ["write", "update", "payment"], **card_overrides},
+        ),
+        risk_level="high",
+    )
+    plan = Plan(
+        selected_agents=[PlannedAgent(agent_id=card.agent_id, action=action)],
+        requires_human_approval=plan_requires,
+        approval_reason="auditing may lead to data changes",
+    )
+    identity = IdentityContext(
+        user=UserIdentity(user_id="alice", roles=["user"]), service=ServiceIdentity()
+    )
+    return assess_approval(
+        plan=plan,
+        cards={card.agent_id: card},
+        decisions=[],
+        identity=identity,
+        settings=settings,
+        query=query,
+    )
+
+
+def test_planner_opinion_does_not_gate_a_read_only_plan():
+    from alstom_ao.domain.enums import ActionType
+
+    result = _assessment(plan_requires=True, action=ActionType.QUERY)
+    assert result.required is False
+    assert result.advisory  # recorded, not enforced
+
+
+def test_planner_opinion_still_gates_a_consequential_action():
+    from alstom_ao.domain.enums import ActionType
+
+    result = _assessment(plan_requires=True, action=ActionType.WRITE)
+    assert result.required is True
+    assert any("auditing" in reason for reason in result.reasons)
+
+
+def test_card_rule_still_gates_a_read_only_action():
+    """Deterministic rules keep working: a card can demand approval for reads."""
+
+    from alstom_ao.domain.enums import ActionType
+
+    result = _assessment(plan_requires=False, action=ActionType.QUERY, requires_approval_for=["query"])
+    assert result.required is True
+
+
+def test_analyze_action_is_read_only():
+    from alstom_ao.domain.enums import ActionType
+
+    assert _assessment(plan_requires=True, action=ActionType.ANALYZE).required is False
+# ---------------------------------------------------------------------------
+# safety net: the planner must not be able to label a write as read-only
+# ---------------------------------------------------------------------------
+
+
+def test_mislabelled_write_still_requires_approval():
+    """Planner says "query" for "create an adjustment task": approval must fire."""
+
+    from alstom_ao.domain.enums import ActionType
+
+    result = _assessment(
+        plan_requires=False, action=ActionType.QUERY, query="Create an adjustment task for invoice INV-1"
+    )
+    assert result.required is True
+    assert any("reads as" in note for note in result.advisory)
+
+
+def test_read_question_about_creating_something_is_not_gated_twice():
+    """A genuinely read-only question still completes when the plan says query."""
+
+    from alstom_ao.domain.enums import ActionType
+
+    result = _assessment(
+        plan_requires=True, action=ActionType.QUERY, query="Check invoice INV-2024-0912 for duplicate charges"
+    )
+    assert result.required is False
+
+
+def test_delete_wording_is_gated_even_if_planner_says_query():
+    from alstom_ao.domain.enums import ActionType
+
+    result = _assessment(plan_requires=False, action=ActionType.QUERY, query="Delete the duplicate charge on INV-1")
+    assert result.required is True

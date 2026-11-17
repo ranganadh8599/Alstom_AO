@@ -367,9 +367,22 @@ async def approval_gate_node(state: OrchestratorState, config: RunnableConfig) -
         decisions=decisions,
         identity=identity,
         settings=settings,
+        query=state.get("query", ""),
     )
 
     if not assessment.required:
+        if assessment.advisory:
+            # Explain the non-decision: the model wanted a human, the deterministic
+            # rules did not, and the read-only plan wins.
+            await runtime.tracer.record(
+                TraceAction.APPROVAL_REQUESTED,
+                TraceStatus.SKIPPED,
+                output={
+                    "required": False,
+                    "advisory": assessment.advisory,
+                    "reason": "read-only plan: planner opinion recorded but not enforced",
+                },
+            )
         return {"approval_id": None, "approval_status": "not_required"}
 
     approval, created = await runtime.services.approvals.get_or_create(

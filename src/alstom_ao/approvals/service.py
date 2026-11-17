@@ -50,15 +50,42 @@ def assess_approval(
     decisions: list[PolicyDecision],
     identity: IdentityContext,
     settings: Settings,
+    query: str = "",
 ) -> ApprovalAssessment:
     reasons: list[str] = []
     actions: list[ActionType] = []
     risk = RiskLevel.LOW
+    # Planner opinions that were not sufficient to trigger approval. Recorded so
+    # the trace explains why a read-only run did not pause.
+    advisory: list[str] = []
 
     for planned in plan.selected_agents:
         card = cards.get(planned.agent_id)
         action = planned.action
         actions.append(action)
+
+        # The planner occasionally labels a consequential request as read-only
+        # ("create an adjustment task" -> query). Approval must not depend on that
+        # classification, so the deterministic keyword inference is consulted too:
+        # the higher-risk of the two wins. This runs only for the approval
+        # decision; the action sent to the agent is untouched.
+        if card is not None and query:
+            # Imported here: planner imports approvals, so a module-level import
+            # would be circular.
+            from alstom_ao.orchestrator.planner import infer_action
+
+            inferred = infer_action(
+                query,
+                {
+                    "allowed_actions": [str(item) for item in card.permissions.allowed_actions],
+                },
+            )
+            if inferred.is_high_impact and not action.is_high_impact:
+                advisory.append(
+                    f"planner labelled '{action}' but the request reads as '{inferred}'"
+                )
+                action = inferred
+                actions[-1] = inferred
 
         action_risk = RISK_BY_ACTION.get(action, RiskLevel.LOW)
         if action_risk.rank > risk.rank:
@@ -78,7 +105,16 @@ def assess_approval(
             reasons.append(f"policy obligation for '{decision.agent_id}' requires approval")
 
     if plan.requires_human_approval:
-        reasons.append(plan.approval_reason or "the planner judged the request consequential")
+        # The planner's opinion is advisory. It must not turn a read-only request
+        # into a human gate: the model flips this flag ~15% of the time for
+        # "check this invoice" and justifies it with "auditing may lead to
+        # changes". Approval fatigue is a real risk - users learn to click approve
+        # without reading - so a read-only plan only pauses when a deterministic
+        # rule (card, policy, destructive action) says so.
+        if any(action.is_high_impact for action in actions):
+            reasons.append(plan.approval_reason or "the planner judged the request consequential")
+        else:
+            advisory.append(plan.approval_reason or "the planner judged the request consequential")
 
     threshold = _risk_from_string(settings.approval_risk_threshold)
     threshold_hit = risk.rank >= threshold.rank and any(action.is_high_impact for action in actions)
@@ -89,7 +125,13 @@ def assess_approval(
         reasons.append("admin_bypass_applied")
 
     deduped = list(dict.fromkeys(reasons))
-    return ApprovalAssessment(required=required, risk_level=risk, reasons=deduped, actions=actions)
+    return ApprovalAssessment(
+        required=required,
+        risk_level=risk,
+        reasons=deduped,
+        actions=actions,
+        advisory=advisory,
+    )
 
 
 def _risk_from_string(value: str) -> RiskLevel:

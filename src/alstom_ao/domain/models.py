@@ -324,6 +324,8 @@ class ApprovalAssessment(BaseModel):
     risk_level: RiskLevel = RiskLevel.LOW
     reasons: list[str] = Field(default_factory=list)
     actions: list[ActionType] = Field(default_factory=list)
+    # Planner opinions that did not trigger approval (read-only plans).
+    advisory: list[str] = Field(default_factory=list)
 
 
 class ApprovalRequest(BaseModel):

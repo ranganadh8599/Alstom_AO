@@ -18,6 +18,33 @@ general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
   store_prompts_in_spend_logs: true
 
+# ---------------------------------------------------------------------------
+# Budgets: deliberately NOT configured here.
+#
+# Every LiteLLM budget is a hard HTTP 429 (global/team/key max_budget,
+# agent max_budget_per_session, agent max_iterations). On agent traffic that 429
+# lands on the agent's own model calls mid-run, which breaks the parent workflow
+# and discards work already paid for. Per-run guardrails are enforced by the
+# orchestration layer instead (soft alert -> model downgrade -> hard gate at the
+# graph boundary): see docs/budgets.md.
+#
+# Use this gateway for org-wide ceilings and soft alerts only, and keep any
+# per-session backstop well above AO_LLM_MAX_COST_USD_PER_RUN (~3x):
+#
+# litellm_settings:
+#   max_budget: 500
+#   budget_duration: 30d
+#
+# general_settings:
+#   alerting: [slack]
+#   alert_types: [budget_alerts]
+#
+# and per agent, under litellm_params:
+#   require_trace_id_on_calls_by_agent: true
+#   max_iterations: 60
+#   max_budget_per_session: 1.50
+# ---------------------------------------------------------------------------
+
 agents:
   - agent_name: finance-invoice-auditor
     agent_card_params:

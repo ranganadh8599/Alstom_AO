@@ -103,16 +103,39 @@ One alert per dimension per run — not per token.
 
 ## Relationship to LiteLLM-side budgets
 
-LiteLLM's proxy has its own `max_budget`/`budget_duration` and webhook support
-for *its* traffic. Those are complementary, not duplicated:
+LiteLLM has its own budget system, and it is complementary — but it is **not** a
+substitute for this one, because every gateway budget is a hard `429`.
 
-| Layer | Sees | Good at |
+| LiteLLM mechanism | Scope | On exceed |
 |---|---|---|
-| LiteLLM proxy | every model call through it, per key/team | org-wide spend caps, cost dashboards |
+| `litellm_settings.max_budget` + `budget_duration` | whole proxy | 429 |
+| team `max_budget` / `budget_duration` | one team | 429 |
+| `max_budget_in_team` | member inside a team | 429 |
+| virtual key `max_budget`, `budget_duration` | one key | 429 |
+| key `soft_budget` | one key | alert only |
+| agent `max_iterations` | LLM calls per `x-litellm-trace-id` session | 429 |
+| agent `max_budget_per_session` | dollars per session | 429 |
+| `alert_types: [budget_alerts]` | key/user budgets | Slack message |
+
+Two caveats worth designing around:
+
+* Budgets need a database. A DB-less proxy **fails open** for the global budget and
+  cannot resolve key/team budgets at all.
+* Session counters TTL out (default 3600 s,
+  `LITELLM_MAX_ITERATIONS_TTL` / `LITELLM_MAX_BUDGET_PER_SESSION_TTL`). A run paused
+  overnight for approval resumes with a reset gateway meter — only our persisted
+  `usage` survives that.
+
+| Layer | Owns | Good at |
+|---|---|---|
+| LiteLLM proxy | every model call through it, per key/team/tag | org-wide spend ceilings, dashboards, weekly reports |
 | This service | one run's plan, agents, hops, actions | per-run fairness, loop caps, graceful partial answers |
 
-Use LiteLLM for organisation-wide ceilings and this service for per-run
-guardrails. Both can be enabled at once.
+**Do not enable both as equal hard caps.** The gateway's 429 hits an agent's own
+model calls mid-run, which is the cascade this design exists to prevent. If you
+want gateway backstops, set them well above the orchestration cap (≈3×) so the
+graceful layer always trips first. Details and config examples:
+[litellm-a2a.md](litellm-a2a.md#budgets-across-the-two-layers).
 
 ---
 

@@ -11,6 +11,22 @@ Implements the parts of the A2A spec the orchestrator needs:
 * idempotent task/message ids so a retry never causes a duplicate side effect
   downstream
 * bounded retries with exponential backoff for transport/5xx failures
+
+Two routing modes (``AO_A2A_ROUTING``)
+--------------------------------------
+``direct``         Call each agent's own endpoint (``card.endpoint``).
+``litellm_proxy``  Call the LiteLLM **agent gateway** instead:
+                   ``{AO_LITELLM_PROXY_URL}/a2a/{agent_name}``, authenticating
+                   with a LiteLLM virtual key. LiteLLM then handles upstream
+                   routing, logging, spend and protocol-version conversion, while
+                   this adapter keeps the registry, policy, identity and tracing
+                   semantics. The agent name is ``card.metadata.litellm_agent_name``
+                   when present, otherwise ``card.agent_id``.
+
+The wire format is unchanged in both modes: JSON-RPC 2.0 ``message/send``. In
+proxy mode the ``A2A-Version`` header carries the protocol version the proxy was
+asked to serve (``0.3`` or ``1.0``), and ``X-LiteLLM-Trace-Id`` is forwarded so
+agent-side LLM calls group under the same trace.
 """
 
 from __future__ import annotations
@@ -117,8 +133,47 @@ class A2AAdapter(AgentAdapter):
             await self._client.aclose()
             self._client = None
 
+    # -- routing -----------------------------------------------------------
+    @property
+    def via_litellm_proxy(self) -> bool:
+        return self.settings.uses_litellm_proxy
+
+    def agent_route_name(self, card: AgentCard) -> str:
+        """Name the LiteLLM gateway knows this agent by."""
+
+        name = card.metadata.get("litellm_agent_name") if isinstance(card.metadata, dict) else None
+        return str(name or card.agent_id)
+
+    def target_url(self, card: AgentCard) -> str:
+        """JSON-RPC endpoint for this agent under the active routing mode."""
+
+        if self.via_litellm_proxy:
+            prefix = self.settings.litellm_agent_prefix.rstrip("/")
+            return f"{self.settings.litellm_proxy_base}{prefix}/{self.agent_route_name(card)}"
+        return card.endpoint
+
+    def _proxy_base_for(self, name: str) -> str:
+        prefix = self.settings.litellm_agent_prefix.rstrip("/")
+        return f"{self.settings.litellm_proxy_base}{prefix}/{name}"
+
+    def _proxy_headers(self) -> dict[str, str]:
+        key = self.settings.litellm_proxy_key()
+        if not key:
+            raise AgentInvocationError(
+                "AO_A2A_ROUTING=litellm_proxy requires a LiteLLM virtual key.",
+                details="Set AO_LITELLM_PROXY_API_KEY or AO_LITELLM_PROXY_API_KEY_REF=env:NAME.",
+                code="missing_proxy_key",
+            )
+        # x-litellm-api-key is preferred when the inbound Authorization header may
+        # carry a token destined for the backend agent.
+        return {"x-litellm-api-key": f"Bearer {key}", "Authorization": f"Bearer {key}"}
+
     # -- auth --------------------------------------------------------------
     def _auth_headers(self, card: AgentCard) -> dict[str, str]:
+        if self.via_litellm_proxy:
+            # The gateway holds the agent's own credentials; we authenticate to it.
+            return self._proxy_headers()
+
         auth = card.auth
         if auth.type == "none" or not auth.secret_ref:
             return {}
@@ -138,12 +193,31 @@ class A2AAdapter(AgentAdapter):
         )
 
     # -- discovery / health ------------------------------------------------
-    async def discover(self, endpoint: str) -> dict[str, Any] | None:
+    def _discovery_bases(self, endpoint: str) -> list[str]:
+        """Base URLs to probe for an agent card.
+
+        In proxy mode an agent name (``finance``) or the agent's own URL is mapped
+        onto the gateway path, so import works against the gateway too.
+        """
+
+        if self.via_litellm_proxy:
+            candidate = endpoint.strip().rstrip("/")
+            if candidate.lower().startswith("http"):
+                name = candidate.split("/")[-1]
+            else:
+                name = candidate
+            return [self._proxy_base_for(name)]
+        return [endpoint.rstrip("/")]
+
+    def _discovery_headers(self) -> dict[str, str]:
+        return self._proxy_headers() if self.via_litellm_proxy else {}
+
+    async def _discover_at(self, base: str, headers: dict[str, str] | None = None) -> dict[str, Any] | None:
         client = self._get_client()
         for path in (self.settings.a2a_discovery_path, self.settings.a2a_legacy_discovery_path):
-            url = f"{endpoint.rstrip('/')}{path}"
+            url = f"{base.rstrip('/')}{path}"
             try:
-                response = await client.get(url)
+                response = await client.get(url, headers=headers or None)
                 if response.status_code == 200:
                     body = response.json()
                     if isinstance(body, dict):
@@ -152,8 +226,16 @@ class A2AAdapter(AgentAdapter):
                 logger.debug("A2A discovery failed at %s: %s", url, exc)
         return None
 
+    async def discover(self, endpoint: str) -> dict[str, Any] | None:
+        headers = self._discovery_headers()
+        for base in self._discovery_bases(endpoint):
+            document = await self._discover_at(base, headers)
+            if document is not None:
+                return document
+        return None
+
     async def check_health(self, card: AgentCard) -> AgentHealth:
-        document = await self.discover(card.endpoint)
+        document = await self.discover(self.target_url(card))
         if document is None:
             return AgentHealth.UNHEALTHY
         return AgentHealth.HEALTHY if document else AgentHealth.DEGRADED
@@ -174,22 +256,32 @@ class A2AAdapter(AgentAdapter):
                 "protocol": self.protocol,
             },
         }
+        trace_map = request.trace.model_dump(mode="json")
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "A2A-Version": A2A_VERSION,
-            **propagation_headers(request.trace.model_dump(mode="json"), request.identity),
+            **propagation_headers(trace_map, request.identity),
             **self._auth_headers(card),
         }
+        if self.via_litellm_proxy:
+            # Tell the gateway which wire format to serve, and give it the trace
+            # ids it needs to group agent-side LLM calls under our run.
+            headers["A2A-Version"] = self.settings.litellm_a2a_protocol_version
+            if self.settings.litellm_forward_trace_headers:
+                headers["X-LiteLLM-Trace-Id"] = request.trace.trace_id
+                headers["X-LiteLLM-Agent-Id"] = self.agent_route_name(card)
+        else:
+            headers["A2A-Version"] = A2A_VERSION
         message_text = request.query if not request.instructions else f"{request.query}\n\nFocus: {request.instructions}"
 
+        target = self.target_url(card)
         last_error: Exception | None = None
         attempts = max(1, self.settings.a2a_max_retries + 1)
 
         for attempt in range(attempts):
             try:
                 payload = self._build_payload(card, message_text, metadata, invocation_id)
-                body = await self._post(card.endpoint, payload, headers)
+                body = await self._post(target, payload, headers)
                 result = self._unwrap(body)
                 text, artifacts, state, error = parse_a2a_result(result)
                 status = TraceStatus.FAILED if state in TERMINAL_FAILURES else TraceStatus.SUCCEEDED
@@ -258,8 +350,10 @@ class A2AAdapter(AgentAdapter):
                 f"Agent endpoint returned HTTP {response.status_code}.",
                 details=response.text[:500],
             )
-        if response.status_code in {404, 405, 501}:
-            # Older A2A peers only expose ``tasks/send``.
+        if response.status_code in {404, 405, 501} and not self.via_litellm_proxy:
+            # Older *direct* A2A peers only expose ``tasks/send``. The LiteLLM
+            # gateway serves a fixed method set, so retrying with a legacy method
+            # there would only mask the real routing error.
             payload["method"] = "tasks/send"
             payload["params"] = {
                 "id": payload["params"]["message"]["messageId"],
@@ -279,7 +373,6 @@ class A2AAdapter(AgentAdapter):
             return response.json()
         except ValueError as exc:
             raise AgentInvocationError("Agent returned a non-JSON response.") from exc
-
     @staticmethod
     def _unwrap(body: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(body, dict):

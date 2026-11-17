@@ -39,6 +39,7 @@ consequential**, and traces every hop to **Langfuse** with dual identity.
 | Central agent registry | Postgres `agent_cards`, mandatory identity/capability card |
 | Dynamic routing | LLM planner (LiteLLM) **plus** deterministic heuristic fallback and hybrid merge |
 | A2A protocol | JSON-RPC 2.0 `message/send` with legacy `tasks/send` fallback, agent-card discovery |
+| LiteLLM agent gateway | Optional A2A routing through `POST /a2a/{agent}` with a virtual key, trace-header and protocol-version propagation |
 | Robust "no agent" handling | Explicit `no_match`, `invalid`, `denied` terminal states with user-facing messages |
 | Policy | OPA (`policies/*.rego`) with local fallback, `observe` / `enforce` modes |
 | Human-in-the-loop | Dynamic risk assessment + LangGraph `interrupt`; survives restart with a Postgres checkpointer |
@@ -70,12 +71,15 @@ flowchart LR
     P -.catalog.-> REG[("agent_cards<br/>Postgres")]
     A -.input.-> OPA["OPA / Rego"]
     E --> AD["A2A adapter"]
-    AD --> A1["Finance agent"]
-    AD --> A2["HR agent"]
-    AD --> A3["IT agent"]
+    AD --> GW2{"AO_A2A_ROUTING"}
+    GW2 -->|litellm_proxy| LLM["LiteLLM agent gateway"]
+    LLM --> A1["Finance agent"]
+    LLM --> A2["HR agent"]
+    LLM --> A3["IT agent"]
+    GW2 -->|direct| A1
     GRAPH -.spans.-> LF["Langfuse"]
     GRAPH -.ledger.-> TR[("runs / trace_events /<br/>approvals / policy_decisions")]
-    GRAPH --> GW["LiteLLM gateway"]
+    GRAPH --> GW["LiteLLM gateway (LLM)"]
 ```
 
 **Guarantees**
@@ -333,6 +337,10 @@ Highlights:
 | `AO_LLM_MODEL` | `openai/gpt-4o-mini` | Any LiteLLM model id |
 | `AO_LLM_MAX_COST_USD_PER_RUN` | `0.50` | Budget guard |
 | `AO_POLICY_MODE` | `observe` | `observe` or `enforce` |
+| `AO_A2A_ROUTING` | `direct` | `direct` or `litellm_proxy` (agent gateway) |
+| `AO_LITELLM_PROXY_URL` | `http://localhost:4000` | LiteLLM agent gateway base URL |
+| `AO_LITELLM_PROXY_API_KEY` | unset | Virtual key; required in proxy mode |
+| `AO_LITELLM_A2A_PROTOCOL_VERSION` | `0.3` | Wire format the gateway serves (`0.3` or `1.0`) |
 | `AO_OPA_URL` | `http://localhost:8181` | Empty disables OPA |
 | `AO_APPROVAL_ALLOW_SELF` | `false` | Keep false in production |
 | `AO_LANGFUSE_ENABLED` | `false` | Set keys to enable |
@@ -342,8 +350,19 @@ Highlights:
 
 ## Extending the platform
 
-### Add a protocol (MCP, REST, gRPC)
+### Route agents through the LiteLLM gateway
 
+```bash
+export AO_A2A_ROUTING=litellm_proxy
+export AO_LITELLM_PROXY_URL=http://localhost:4000
+export AO_LITELLM_PROXY_API_KEY=sk-alstom-master
+```
+
+Agent invocations then go to `POST /a2a/{agent_name}` on the gateway, while
+registry, policy, approvals and tracing stay in this service. Details, naming
+rules and a config exporter: [docs/litellm-a2a.md](docs/litellm-a2a.md).
+
+### Add a protocol (MCP, REST, gRPC)
 ```python
 # src/alstom_ao/adapters/mcp.py
 class MCPAdapter(AgentAdapter):
@@ -374,6 +393,10 @@ you rely on the offline fallback. Decisions are recorded either way.
 ## Production notes
 
 - **Schema**: `alembic upgrade head` (or `AO_DB_AUTO_CREATE=true` for dev).
+- **Agent routing**: `AO_A2A_ROUTING=litellm_proxy` requires the gateway to be
+  reachable and a virtual key to be configured; the gateway then owns upstream
+  agent credentials, logs and spend. Keep the registry authoritative and
+  regenerate the gateway config with `scripts/export_litellm_agents.py`.
 - **Durable pauses**: install the `postgres` extra
   (`langgraph-checkpoint-postgres`, `psycopg[binary]`) so an approval pause
   survives a process restart. Without it the run/trace/approval ledger survives,
@@ -395,14 +418,16 @@ you rely on the offline fallback. Decisions are recorded either way.
 ## Tests
 
 ```bash
-python -m pytest -q      # 52 tests, hermetic (SQLite + fake A2A + mock LLM)
+python -m pytest -q      # 65 tests, hermetic (SQLite + fake A2A/gateway + mock LLM)
 python -m ruff check src tests examples
 ```
 
 Coverage includes: registry CRUD/authz, planner validation and hallucination
-rejection, A2A message/legacy fallback/error mapping, policy observe/enforce,
-approval approve/reject/expiry/self-approval, OpenAI-compatible streaming, trace
-ledger dual identity, and end-to-end partial failure.
+rejection, A2A message/legacy fallback/error mapping, **LiteLLM gateway routing
+(target URL, virtual-key auth, trace headers, version pinning, no legacy
+fallback)**, policy observe/enforce, approval approve/reject/expiry/self-approval,
+OpenAI-compatible streaming, trace ledger dual identity, and end-to-end partial
+failure.
 
 ---
 
@@ -418,6 +443,7 @@ repositories:
 | `multi-agent-orchestrator` (awslabs) | Intent classifier contract, agent abstraction, streaming surface |
 | `loomvault` | Durable replay mindset, per-run budget with explicit strategies, no double-billing |
 | `orloj` | Policy/approval resources, A2A JSON-RPC semantics, declarative governance |
+| LiteLLM agent gateway docs | A2A proxy surface (`/a2a/{agent}`), virtual-key auth, wire-format pinning, trace-header propagation |
 | `OPA` | Rego decision points, fail-closed authorization |
 | `nod` | Approval-before-acting UX and trust as a first-class feature |
 

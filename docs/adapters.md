@@ -21,16 +21,25 @@ approval and tracing layers are untouched.
 
 | Concern | Behavior |
 |---|---|
-| Discovery | `GET {endpoint}/.well-known/agent-card.json`, then legacy `/.well-known/agent.json` |
+| Routing | `AO_A2A_ROUTING=direct` → `card.endpoint`; `litellm_proxy` → `{gateway}/a2a/{agent}` |
+| Discovery | `GET {base}/.well-known/agent-card.json`, then legacy `/.well-known/agent.json` |
 | Invocation | JSON-RPC 2.0 `message/send` with `configuration.blocking=true` |
 | Legacy peers | On HTTP 404/405/501, retries with `tasks/send` |
 | Identity | `params.message.messageId` = `{run}-{agent}-{uuid}` (unique per attempt); task id reused for legacy |
 | Trace | `params.metadata.trace_context`, `params.metadata.identity`, `X-Alstom-*` headers |
-| Auth | `none`, `bearer`, `api_key` (secret resolved from `env:` refs); `oauth2` is rejected explicitly |
+| Auth | `none`, `bearer`, `api_key` (secret resolved from `env:` refs); `oauth2` is rejected explicitly. In proxy mode a LiteLLM virtual key is used instead |
 | Retries | Transport errors and 429/5xx, exponential backoff (`AO_A2A_MAX_RETRIES`) |
 | Timeout | Per attempt (`AO_A2A_TIMEOUT_SECONDS`); timeout raises `agent_timeout` |
 | Response | Merges `status.message.parts`, `artifacts[].parts`; maps `failed/canceled/rejected` to failure |
 | Errors | JSON-RPC `error` → `AgentInvocationError`; never leaks into an unhandled 500 |
+
+### Gateway mode
+
+`AO_A2A_ROUTING=litellm_proxy` posts the same JSON-RPC envelope to the LiteLLM
+agent gateway instead of the agent, adding `x-litellm-api-key`,
+`A2A-Version`, `X-LiteLLM-Trace-Id` and `X-LiteLLM-Agent-Id`. The legacy
+`tasks/send` fallback is disabled there because the gateway exposes a fixed method
+set. See [litellm-a2a.md](litellm-a2a.md).
 
 ### What a peer must expose
 

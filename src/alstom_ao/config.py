@@ -61,6 +61,15 @@ class Settings(BaseSettings):
     max_parallel_agents: int = 4
     run_timeout_seconds: float = 120.0
 
+    # --- A2A routing: direct to the agent, or through the LiteLLM agent gateway
+    a2a_routing: str = "direct"  # direct | litellm_proxy
+    litellm_proxy_url: str = "http://localhost:4000"
+    litellm_proxy_api_key: str | None = None
+    litellm_proxy_api_key_ref: str | None = None
+    litellm_agent_prefix: str = "/a2a"
+    litellm_a2a_protocol_version: str = "0.3"  # wire format the proxy serves us
+    litellm_forward_trace_headers: bool = True
+
     # --- policy ----------------------------------------------------------
     policy_mode: str = "observe"  # observe | enforce
     opa_url: str | None = "http://localhost:8181"
@@ -103,6 +112,22 @@ class Settings(BaseSettings):
             raise ValueError("llm_mode must be 'mock' or 'litellm'")
         return value
 
+    @field_validator("a2a_routing")
+    @classmethod
+    def _validate_a2a_routing(cls, value: str) -> str:
+        value = value.lower().strip()
+        if value not in {"direct", "litellm_proxy"}:
+            raise ValueError("a2a_routing must be 'direct' or 'litellm_proxy'")
+        return value
+
+    @field_validator("litellm_a2a_protocol_version")
+    @classmethod
+    def _validate_protocol_version(cls, value: str) -> str:
+        value = str(value).strip()
+        if value not in {"0.3", "1.0"}:
+            raise ValueError("litellm_a2a_protocol_version must be '0.3' or '1.0'")
+        return value
+
     # --- convenience accessors -------------------------------------------
     @property
     def cors_origin_list(self) -> list[str]:
@@ -123,6 +148,23 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.environment.lower() in {"prod", "production"}
+
+    @property
+    def uses_litellm_proxy(self) -> bool:
+        """True when agent traffic is routed through the LiteLLM agent gateway."""
+
+        return self.a2a_routing == "litellm_proxy" and bool(self.litellm_proxy_url)
+
+    @property
+    def litellm_proxy_base(self) -> str:
+        return self.litellm_proxy_url.rstrip("/")
+
+    def litellm_proxy_key(self) -> str | None:
+        """Virtual key for the proxy: explicit value wins over an ``env:`` reference."""
+
+        if self.litellm_proxy_api_key:
+            return self.litellm_proxy_api_key
+        return self.resolve_secret_ref(self.litellm_proxy_api_key_ref)
 
     def resolve_secret_ref(self, reference: str | None) -> str | None:
         """Resolve ``env:NAME`` secret references. Raw secrets are never stored in cards."""

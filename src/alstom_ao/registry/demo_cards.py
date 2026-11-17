@@ -80,7 +80,11 @@ def demo_cards(settings: Settings) -> list[AgentCardCreate]:
                 "Does this vendor invoice match purchase order PO-7781?",
                 "What is the payment status of supplier Schneider Electric?",
             ],
-            metadata={"cost_center": "AP-001", "sla_seconds": 20},
+            metadata={
+                "cost_center": "AP-001",
+                "sla_seconds": 20,
+                "litellm_agent_name": "finance-invoice-auditor",
+            },
         ),
         AgentCardCreate(
             agent_id="hr-policy-advisor",
@@ -119,7 +123,7 @@ def demo_cards(settings: Settings) -> list[AgentCardCreate]:
                 "What is the travel policy for economy class in Europe?",
                 "Can I work remotely from another country for two weeks?",
             ],
-            metadata={"policy_corpus": "hr-2024.4"},
+            metadata={"policy_corpus": "hr-2024.4", "litellm_agent_name": "hr-policy-advisor"},
         ),
         AgentCardCreate(
             agent_id="it-service-desk",
@@ -160,6 +164,6 @@ def demo_cards(settings: Settings) -> list[AgentCardCreate]:
                 "Which software can I install without a ticket?",
                 "My laptop is slow, what should I do?",
             ],
-            metadata={"ticket_system": "servicenow"},
+            metadata={"ticket_system": "servicenow", "litellm_agent_name": "it-service-desk"},
         ),
     ]

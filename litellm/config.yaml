@@ -1,0 +1,81 @@
+# LiteLLM agent gateway configuration for the Alstom AO demo stack.
+#
+# Every agent the orchestration layer may call is registered here so LiteLLM can
+# provide routing, logging, spend attribution and A2A protocol-version handling.
+#
+# Keep `agent_name` in sync with `metadata.litellm_agent_name` on the Alstom AO
+# registry card (or leave that metadata unset and use the card's agent_id).
+# Generate this block from the registry with:
+#     python scripts/export_litellm_agents.py
+
+model_list:
+  - model_name: gpt-4o-mini
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  store_prompts_in_spend_logs: true
+
+agents:
+  - agent_name: finance-invoice-auditor
+    agent_card_params:
+      name: Finance Invoice Auditor
+      description: Audits vendor invoices, detects duplicates and checks purchase orders.
+      url: http://mock-agents:9101/agents/finance
+      version: 2.3.0
+      protocolVersion: "0.3"
+      capabilities:
+        streaming: false
+      skills:
+        - id: invoice-audit
+          name: invoice audit
+          description: Compare an invoice with its purchase order and payment history.
+          tags: [finance, invoice, audit, duplicate]
+          examples:
+            - Check invoice INV-2024-0912 for duplicate charges
+        - id: payment-status
+          name: vendor payment status
+          description: Report the payment status of a supplier invoice.
+          tags: [finance, payment, vendor]
+    litellm_params:
+      api_key: os.environ/ALSTOM_AO_AGENT_KEY
+
+  - agent_name: hr-policy-advisor
+    agent_card_params:
+      name: HR Policy Advisor
+      description: Answers HR policy questions about leave, travel and benefits.
+      url: http://mock-agents:9101/agents/hr
+      version: 1.8.2
+      protocolVersion: "0.3"
+      capabilities:
+        streaming: false
+      skills:
+        - id: hr-policy
+          name: hr policy lookup
+          description: Cite the HR policy that answers a people question.
+          tags: [hr, policy, leave, benefits]
+          examples:
+            - How many days of annual leave do I get?
+    litellm_params:
+      api_key: os.environ/ALSTOM_AO_AGENT_KEY
+
+  - agent_name: it-service-desk
+    agent_card_params:
+      name: IT Service Desk
+      description: Resolves IT knowledge questions about VPN, access and software.
+      url: http://mock-agents:9101/agents/it
+      version: 4.1.0
+      protocolVersion: "0.3"
+      capabilities:
+        streaming: false
+      skills:
+        - id: vpn-support
+          name: vpn troubleshooting
+          description: Step-by-step VPN diagnostics.
+          tags: [it, vpn, access]
+          examples:
+            - How do I connect to the VPN from a Mac?
+    litellm_params:
+      api_key: os.environ/ALSTOM_AO_AGENT_KEY

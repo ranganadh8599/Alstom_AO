@@ -39,6 +39,27 @@ services:
       timeout: 3s
       retries: 10
 
+  # LiteLLM agent gateway: owns upstream agent routing, logs, spend and protocol
+  # version conversion. The orchestration layer calls POST /a2a/{agent} here.
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-alstom-master}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ALSTOM_AO_AGENT_KEY: ${ALSTOM_AO_AGENT_KEY:-sk-alstom-agent}
+      STORE_MODEL_IN_DB: "False"
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+    ports:
+      - "4000:4000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:4000/health/liveliness').status==200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+
   api:
     build: .
     depends_on:
@@ -47,6 +68,8 @@ services:
       opa:
         condition: service_started
       mock-agents:
+        condition: service_started
+      litellm:
         condition: service_started
     environment:
       AO_ENVIRONMENT: dev
@@ -58,6 +81,12 @@ services:
       AO_LLM_MODEL: ${AO_LLM_MODEL:-openai/gpt-4o-mini}
       AO_LLM_API_KEY: ${AO_LLM_API_KEY:-}
       AO_LLM_API_BASE: ${AO_LLM_API_BASE:-}
+      # Agent traffic goes through the LiteLLM agent gateway. Set to "direct"
+      # to call each agent endpoint instead.
+      AO_A2A_ROUTING: ${AO_A2A_ROUTING:-litellm_proxy}
+      AO_LITELLM_PROXY_URL: http://litellm:4000
+      AO_LITELLM_PROXY_API_KEY: ${LITELLM_MASTER_KEY:-sk-alstom-master}
+      AO_LITELLM_A2A_PROTOCOL_VERSION: ${AO_LITELLM_A2A_PROTOCOL_VERSION:-0.3}
       AO_POLICY_MODE: ${AO_POLICY_MODE:-observe}
       AO_OPA_URL: http://opa:8181
       AO_POLICY_LOCAL_FALLBACK: "true"

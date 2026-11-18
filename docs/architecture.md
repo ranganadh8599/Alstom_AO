@@ -42,15 +42,10 @@ sequenceDiagram
         API->>G: Command(resume=…)
     end
     G->>X: invoke(card, request)
-    alt AO_A2A_ROUTING=litellm_proxy (the only production mode)
-        X->>W: POST /a2a/{agent} JSON-RPC + virtual key
-        W->>A: message/send (upstream)
-        A-->>W: task + artifacts
-        W-->>X: normalized response
-    else direct (dev only, refused in prod)
-        X->>A: message/send (trace + identities)
-        A-->>X: task completed + artifacts
-    end
+    X->>W: POST /a2a/{agent} JSON-RPC + virtual key
+    W->>A: message/send (upstream)
+    A-->>W: task + artifacts
+    W-->>X: normalized response
     X-->>G: normalized InvocationResult
     G->>L: agent.completed, synthesis, run.completed
     G-->>API: final state

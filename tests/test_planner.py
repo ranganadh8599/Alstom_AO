@@ -40,8 +40,8 @@ CATALOG = [
 def settings(**overrides) -> Settings:
     return Settings(
         environment="test",
-        # adapter tests use fake peers directly; production is gateway-only
-        a2a_routing="direct",
+        litellm_proxy_url="http://test",
+        litellm_proxy_api_key="sk-test-gateway-key",
         database_url="sqlite+aiosqlite:///:memory:",
         opa_url=None,
         llm_mode="mock",

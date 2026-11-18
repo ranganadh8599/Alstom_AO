@@ -37,7 +37,7 @@ async def test_health_probe_updates_card(client, admin_headers, a2a):
     assert healthy.status_code == 200
     assert healthy.json()["health"] == "healthy"
 
-    a2a._cards.pop("http://test/agents/it", None)
+    a2a._cards.pop("it", None)
     unhealthy = await client.post("/v1/agents/probe-agent/health", headers=admin_headers)
     assert unhealthy.json()["health"] == "unhealthy"
 

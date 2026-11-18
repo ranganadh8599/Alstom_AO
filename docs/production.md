@@ -178,7 +178,8 @@ add them only with a concrete requirement.
 6. Set `AO_METRICS_TOKEN`; scrape `/metrics`.
 7. Front the service with authentication, rate limiting and TLS; strip inbound
    `X-User-*`.
-8. Choose `AO_A2A_ROUTING`: `direct` (service holds agent credentials) or
-   `litellm_proxy` (gateway holds them; regenerate its config from the registry).
+8. Set `AO_LITELLM_PROXY_URL` and a gateway key. Agents are reachable **only**
+   through the gateway; regenerate its config from the registry with
+   `scripts/export_litellm_agents.py`.
 9. Schedule `scripts/prune_trace_events.py`; alert on `GET /v1/approvals` age.
 10. Send `Idempotency-Key` from the UI submit path.

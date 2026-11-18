@@ -355,7 +355,6 @@ Highlights:
 | `AO_MAX_AGENT_HOPS` | `8` | Agent calls per run |
 | `AO_MAX_A2A_DEPTH` | `3` | Inbound delegation depth before fan-out is refused |
 | `AO_POLICY_MODE` | `observe` | `observe` or `enforce` |
-| `AO_A2A_ROUTING` | `litellm_proxy` | **Gateway-only in production**; `direct` is dev-only and refused when `AO_ENVIRONMENT=prod` |
 | `AO_LITELLM_PROXY_URL` | `http://localhost:4000` | LiteLLM agent gateway base URL |
 | `AO_LITELLM_PROXY_API_KEY` | unset | Virtual key; required in proxy mode |
 | `AO_LITELLM_A2A_PROTOCOL_VERSION` | `0.3` | Wire format the gateway serves (`0.3` or `1.0`) |
@@ -371,10 +370,11 @@ Highlights:
 ### Route agents through the LiteLLM gateway
 
 ```bash
-export AO_A2A_ROUTING=litellm_proxy
 export AO_LITELLM_PROXY_URL=http://localhost:4000
 export AO_LITELLM_PROXY_API_KEY=sk-alstom-master
 ```
+
+The gateway is the only route to an agent ? there is no direct mode to configure.
 
 Agent invocations then go to `POST /a2a/{agent_name}` on the gateway, while
 registry, policy, approvals and tracing stay in this service. Details, naming

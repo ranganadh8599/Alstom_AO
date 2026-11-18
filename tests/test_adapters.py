@@ -25,9 +25,9 @@ def settings(**overrides) -> Settings:
         environment="test",
         database_url="sqlite+aiosqlite:///:memory:",
         opa_url=None,
-        # These tests exercise the adapter against fake peers directly.
-        # Production routing is gateway-only and covered in test_a2a_proxy.py.
-        a2a_routing="direct",
+        # Gateway-only routing: the fake A2A network serves /a2a/{agent}.
+        litellm_proxy_url="http://test",
+        litellm_proxy_api_key="sk-test-gateway-key",
         a2a_timeout_seconds=2,
         a2a_max_retries=0,
     )
@@ -84,15 +84,15 @@ async def test_invokes_message_send_and_propagates_context(a2a: FakeA2ANetwork):
     assert call["headers"]["x-alstom-run-id"] == "run_1"
 
 
-async def test_falls_back_to_legacy_tasks_send(a2a: FakeA2ANetwork):
-    a2a.legacy_only = True
+async def test_never_uses_legacy_tasks_send(a2a: FakeA2ANetwork):
+    """The gateway serves a fixed method set, so there is no legacy fallback."""
+
     adapter = A2AAdapter(settings(), transport=a2a.transport)
-    result = await adapter.invoke(make_card(), make_request())
+    await adapter.invoke(make_card(), make_request())
     await adapter.aclose()
 
-    assert result.status == TraceStatus.SUCCEEDED
     methods = [call["method"] for call in a2a.calls_for("/agents/finance")]
-    assert methods == ["tasks/send"]
+    assert methods == ["message/send"]
 
 
 async def test_failed_agent_state_is_mapped(a2a: FakeA2ANetwork):
@@ -124,13 +124,28 @@ async def test_jsonrpc_error_raises(a2a: FakeA2ANetwork):
     await adapter.aclose()
 
 
-async def test_missing_bearer_secret_is_reported(a2a: FakeA2ANetwork, monkeypatch):
-    monkeypatch.delenv("AO_TEST_TOKEN", raising=False)
-    card = make_card(auth={"type": "bearer", "secret_ref": "env:AO_TEST_TOKEN"})
+async def test_card_auth_is_ignored_in_favour_of_the_gateway_key(a2a: FakeA2ANetwork):
+    """Agent credentials live in the gateway; the card's auth block is metadata."""
+
+    card = make_card(auth={"type": "bearer", "secret_ref": "env:NOT_SET_ANYWHERE"})
     adapter = A2AAdapter(settings(), transport=a2a.transport)
+    result = await adapter.invoke(card, make_request())
+    await adapter.aclose()
+
+    assert result.status == TraceStatus.SUCCEEDED
+    call = a2a.calls_for("/agents/finance")[0]
+    assert call["headers"]["x-litellm-api-key"] == "Bearer sk-test-gateway-key"
+    assert call["headers"]["authorization"] == "Bearer sk-test-gateway-key"
+
+
+async def test_missing_gateway_key_is_reported(a2a: FakeA2ANetwork):
+    adapter = A2AAdapter(
+        settings(litellm_proxy_api_key=None, litellm_proxy_api_key_ref=None),
+        transport=a2a.transport,
+    )
     with pytest.raises(AgentInvocationError) as exc:
-        await adapter.invoke(card, make_request())
-    assert "not resolvable" in str(exc.value)
+        await adapter.invoke(make_card(), make_request())
+    assert exc.value.code == "missing_proxy_key"
     await adapter.aclose()
 
 

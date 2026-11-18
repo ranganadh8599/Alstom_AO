@@ -154,7 +154,8 @@ def _settings(**overrides) -> Settings:
         seed_demo_agents=False,
         opa_url=None,
         llm_mode="mock",
-        a2a_routing="direct",
+        litellm_proxy_url="http://test",
+        litellm_proxy_api_key="sk-test-gateway-key",
     )
     base.update(overrides)
     return Settings(**base)

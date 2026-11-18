@@ -171,8 +171,8 @@ def _assessment(plan_requires: bool, action, query: str = "", **card_overrides):
     )
 
     settings = Settings(environment="test",
-        # adapter tests use fake peers directly; production is gateway-only
-        a2a_routing="direct", database_url="sqlite+aiosqlite:///:memory:")
+        litellm_proxy_url="http://test",
+        litellm_proxy_api_key="sk-test-gateway-key", database_url="sqlite+aiosqlite:///:memory:")
     card = AgentCard(
         agent_id="finance-invoice-auditor",
         name="Finance",

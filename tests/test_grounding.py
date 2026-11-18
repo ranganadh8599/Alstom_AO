@@ -125,8 +125,8 @@ async def _trace(app, run_id: str, headers) -> list[dict]:
 def _settings(grounding: str) -> Settings:
     return Settings(
         environment="test",
-        # adapter tests use fake peers directly; production is gateway-only
-        a2a_routing="direct",
+        litellm_proxy_url="http://test",
+        litellm_proxy_api_key="sk-test-gateway-key",
         database_url="sqlite+aiosqlite:///:memory:",
         seed_demo_agents=False,
         opa_url=None,
@@ -214,8 +214,8 @@ async def test_off_mode_disables_the_check(grounding_app_factory, user_headers, 
 def test_invalid_mode_is_rejected():
     with pytest.raises(ValueError):
         Settings(environment="test",
-        # adapter tests use fake peers directly; production is gateway-only
-        a2a_routing="direct", synthesis_grounding="maybe")
+        litellm_proxy_url="http://test",
+        litellm_proxy_api_key="sk-test-gateway-key", synthesis_grounding="maybe")
 
 # ---------------------------------------------------------------------------
 # limitation 1: literal matching is too brittle

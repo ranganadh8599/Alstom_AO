@@ -214,8 +214,8 @@ async def test_lost_checkpoint_state_is_rejected_not_silently_completed(tmp_path
     def boot_settings() -> Settings:
         return Settings(
             environment="test",
-        # adapter tests use fake peers directly; production is gateway-only
-        a2a_routing="direct",
+        litellm_proxy_url="http://test",
+        litellm_proxy_api_key="sk-test-gateway-key",
             database_url=database_url,
             seed_demo_agents=False,
             opa_url=None,

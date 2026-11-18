@@ -3,8 +3,9 @@
 **Policy: every inter-agent call goes through the LiteLLM agent gateway.**
 There are no direct agent-to-agent calls. This is enforced, not just documented:
 
-- `AO_A2A_ROUTING` defaults to `litellm_proxy`;
-- startup **fails** if `AO_ENVIRONMENT=prod` and routing is anything else;
+- there is **no routing switch to set** ? direct agent invocation was removed from
+  the codebase, not merely disabled;
+- startup **fails** if `AO_LITELLM_PROXY_URL` is empty, in any environment;
 - `/readyz` reports the gateway and returns 503 when it is unreachable, so a
   deployment cannot claim readiness while agent traffic has no route.
 
@@ -50,7 +51,6 @@ in the orchestration layer. The gateway executes, we govern.
 ## Configuration
 
 ```env
-AO_A2A_ROUTING=litellm_proxy
 AO_LITELLM_PROXY_URL=http://litellm:4000
 AO_LITELLM_PROXY_API_KEY=sk-alstom-master          # or:
 AO_LITELLM_PROXY_API_KEY_REF=env:AO_LITELLM_VIRTUAL_KEY
@@ -218,15 +218,12 @@ curl -s localhost:8080/v1/runs/<run_id>/trace -H 'X-User-Id: alice' \
   | jq '.events[] | select(.agent_id != null) | {action, agent_id, trace_id}'
 ```
 
-## Why there is no direct mode in production
+## Why there is no direct mode
 
-`direct` still exists because the A2A adapter is unit-tested against fake peers
-without a gateway. It is refused at startup in production:
-
-```
-AO_ENVIRONMENT=prod + AO_A2A_ROUTING=direct
-  -> ValueError: AO_A2A_ROUTING must be 'litellm_proxy' in production
-```
+The direct code path was deleted: the adapter has no branch that dials
+`card.endpoint`, and there is no configuration that re-enables one. Tests drive a
+fake gateway (`FakeA2ANetwork`) that serves `/a2a/{agent}`, so the tested path is
+the production path.
 
 Two reasons the gateway is mandatory:
 

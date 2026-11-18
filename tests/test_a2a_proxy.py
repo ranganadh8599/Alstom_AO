@@ -99,7 +99,6 @@ def proxy_settings(**overrides) -> Settings:
         llm_mode="mock",
         policy_mode="observe",
         seed_demo_agents=False,
-        a2a_routing="litellm_proxy",
         litellm_proxy_url=PROXY,
         litellm_proxy_api_key=KEY,
         a2a_max_retries=0,
@@ -145,11 +144,11 @@ async def test_proxy_mode_posts_jsonrpc_to_gateway():
     assert "via gateway" in result.text
 
     call = gateway.invocations()[0]
-    assert call["path"] == "/a2a/finance-invoice-auditor"
+    assert call["path"] == "/a2a/finance"
     assert call["headers"]["x-litellm-api-key"] == f"Bearer {KEY}"
     assert call["headers"]["a2a-version"] == "0.3"
     assert call["headers"]["x-litellm-trace-id"] == "b" * 32
-    assert call["headers"]["x-litellm-agent-id"] == "finance-invoice-auditor"
+    assert call["headers"]["x-litellm-agent-id"] == "finance"
     # Our own trace headers still travel, so the gateway can forward them.
     assert call["headers"]["x-alstom-trace-id"] == "b" * 32
 
@@ -221,15 +220,18 @@ async def test_proxy_mode_can_request_wire_format_1_0():
     assert gateway.invocations()[0]["headers"]["a2a-version"] == "1.0"
 
 
-async def test_direct_mode_still_targets_the_agent_endpoint():
+async def test_adapter_never_dials_the_agent_endpoint():
+    """The card's endpoint is metadata only: every call goes to the gateway."""
+
     gateway = FakeLiteLLMGateway()
-    adapter = A2AAdapter(proxy_settings(a2a_routing="direct"), transport=httpx.MockTransport(gateway))
-    await adapter.invoke(make_card(endpoint="http://agent-direct:9101/agents/finance"), make_request())
+    adapter = A2AAdapter(proxy_settings(), transport=httpx.MockTransport(gateway))
+    await adapter.invoke(make_card(endpoint="http://agent-direct.invalid/agents/finance"), make_request())
     await adapter.aclose()
 
-    call = gateway.invocations()[0]
-    assert call["path"] == "/agents/finance"
-    assert "x-litellm-api-key" not in call["headers"]
+    calls = gateway.invocations()
+    assert len(calls) == 1
+    assert calls[0]["path"] == "/a2a/finance"
+    assert "agent-direct.invalid" not in str(calls[0]["path"])
 
 
 # ---------------------------------------------------------------------------
@@ -293,13 +295,16 @@ async def test_orchestration_routes_agent_calls_through_the_gateway(
 
     agent_calls = gateway.invocations()
     assert len(agent_calls) == 1
-    assert agent_calls[0]["path"] == "/a2a/finance-invoice-auditor"
+    assert agent_calls[0]["path"] == "/a2a/finance"
     assert agent_calls[0]["headers"]["x-litellm-trace-id"] == run["trace_id"]
 
 
 async def test_health_probe_uses_the_gateway_in_proxy_mode(
     proxy_client, admin_headers, gateway: FakeLiteLLMGateway
 ):
+    # The card's endpoint yields litellm_agent_name "finance", so that is the
+    # gateway name the probe must use.
+    gateway.register("finance")
     payload = agent_payload("finance-invoice-auditor", endpoint="http://agent-direct:9101/agents/finance")
     await proxy_client.post("/v1/agents", json=payload, headers=admin_headers)
 
@@ -313,36 +318,27 @@ async def test_health_probe_uses_the_gateway_in_proxy_mode(
 # ---------------------------------------------------------------------------
 
 
-def test_default_routing_is_the_gateway():
-    from alstom_ao.config import Settings
-
-    assert Settings(environment="dev").a2a_routing == "litellm_proxy"
-
-
-def test_production_rejects_direct_agent_routing():
-    """Policy: no direct agent-to-agent calls in production."""
+def test_there_is_no_routing_switch():
+    """Direct agent invocation was removed from the codebase entirely."""
 
     from alstom_ao.config import Settings
 
-    with pytest.raises(ValueError) as exc:
-        Settings(environment="prod", a2a_routing="direct")
-    assert "litellm_proxy" in str(exc.value)
+    assert not hasattr(Settings(environment="dev"), "a2a_routing")
 
 
-def test_production_requires_a_gateway_url():
+def test_gateway_url_is_mandatory():
     from alstom_ao.config import Settings
 
     with pytest.raises(ValueError) as exc:
-        Settings(environment="prod", litellm_proxy_url="")
+        Settings(environment="dev", litellm_proxy_url="")
     assert "AO_LITELLM_PROXY_URL" in str(exc.value)
 
 
-def test_direct_routing_is_still_allowed_outside_production():
-    """Kept for adapter unit tests; never a production option."""
-
+def test_gateway_url_must_not_be_blank():
     from alstom_ao.config import Settings
 
-    assert Settings(environment="test", a2a_routing="direct").a2a_routing == "direct"
+    with pytest.raises(ValueError):
+        Settings(environment="prod", litellm_proxy_url="   ")
 
 
 async def test_readyz_reports_the_agent_gateway(settings, a2a):
@@ -350,7 +346,7 @@ async def test_readyz_reports_the_agent_gateway(settings, a2a):
 
     from alstom_ao.main import create_app, initialize_app, shutdown_app
 
-    gateway_down = settings.model_copy(update={"a2a_routing": "litellm_proxy", "litellm_proxy_url": "http://127.0.0.1:1"})
+    gateway_down = settings.model_copy(update={"litellm_proxy_url": "http://127.0.0.1:1"})
     app = create_app(gateway_down, a2a_transport=a2a.transport)
     await initialize_app(app)
     try:
@@ -360,7 +356,6 @@ async def test_readyz_reports_the_agent_gateway(settings, a2a):
         assert response.status_code == 503
         body = response.json()
         assert body["status"] == "degraded"
-        assert body["checks"]["a2a_routing"] == "litellm_proxy"
         assert body["checks"]["agent_gateway"].startswith("unreachable")
     finally:
         await shutdown_app(app)

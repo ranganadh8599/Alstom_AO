@@ -22,33 +22,44 @@ AGENT_TEXT = "{agent} handled: {query}"
 
 
 class FakeA2ANetwork:
-    """In-memory A2A peer implementing discovery + message/send."""
+    """In-memory A2A gateway: serves ``/a2a/{agent}`` the way LiteLLM does.
+
+    Production has no direct agent path, so tests drive the adapter through a
+    gateway shape too. Cards are keyed by agent name; callers register with
+    ``install("http://test/agents/finance", name="FINANCE")`` and the adapter
+    reaches ``http://test/a2a/finance`` (or the card's ``litellm_agent_name``).
+    """
 
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
         self.fail_paths: set[str] = set()
-        self.legacy_only = False
         self.empty_paths: set[str] = set()
         # path -> verbatim answer text, for tests that need realistic agent output.
         self.answers: dict[str, str] = {}
+        self._cards: dict[str, dict[str, Any]] = {}
+
+    @staticmethod
+    def _agent_name(endpoint: str) -> str:
+        return endpoint.rstrip("/").split("/")[-1]
 
     def install(self, endpoint: str, *, name: str, version: str = "1.0.0") -> None:
-        self._cards[endpoint] = {  # type: ignore[attr-defined]
+        agent = self._agent_name(endpoint)
+        self._cards[agent] = {
             "name": name,
             "description": f"{name} test agent",
-            "url": endpoint,
+            # The gateway serves the card at its own URL, not the agent's.
+            "url": f"http://test/a2a/{agent}",
             "version": version,
             "capabilities": {"streaming": False},
             "skills": [{"id": name.lower().replace(" ", "-"), "name": name, "tags": ["test"]}],
         }
 
-    _cards: dict[str, dict[str, Any]] = {}
-
     def __call__(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
         base = path.split("/.well-known/")[0]
         if path.endswith("/.well-known/agent-card.json") or path.endswith("/.well-known/agent.json"):
-            card = self._cards.get(f"http://test{base}")
+            agent = self._agent_name(base)
+            card = self._cards.get(agent)
             if card is None:
                 return httpx.Response(404, json={"error": "not found"})
             return httpx.Response(200, json=card)
@@ -59,8 +70,6 @@ class FakeA2ANetwork:
             return httpx.Response(400, json={"error": "bad json"})
         agent = path.rstrip("/").split("/")[-1]
         params = body.get("params") or {}
-        if self.legacy_only and body.get("method") == "message/send":
-            return httpx.Response(404, json={"error": "method not found"})
         query = ""
         message = params.get("message") or {}
         for part in message.get("parts") or []:
@@ -75,23 +84,15 @@ class FakeA2ANetwork:
                 "headers": dict(request.headers),
             }
         )
-        if path in self.fail_paths:
+        # Matching is by agent segment: routing is gateway-only, so a test says
+        # fail_paths.add("/agents/finance") meaning "the finance agent".
+        if agent in {item.rstrip("/").split("/")[-1] for item in self.fail_paths}:
             return httpx.Response(503, json={"error": "unavailable"})
-        if path in self.empty_paths:
+        if agent in {item.rstrip("/").split("/")[-1] for item in self.empty_paths}:
             return httpx.Response(200, json={"jsonrpc": "2.0", "id": body.get("id"), "result": {"kind": "task", "status": {"state": "completed"}}})
-        if body.get("method") == "tasks/send":
-            return httpx.Response(
-                200,
-                json={
-                    "jsonrpc": "2.0",
-                    "id": body.get("id"),
-                    "result": {
-                        "id": params.get("id"),
-                        "status": {"state": "completed", "message": {"role": "agent", "parts": [{"type": "text", "text": self._answer_for(path, agent, query)}]}},
-                        "artifacts": [],
-                    },
-                },
-            )
+        if body.get("method") != "message/send":
+            # The gateway exposes a fixed method set; anything else is a bug here.
+            return httpx.Response(404, json={"error": f"unsupported method {body.get('method')}"})
         return httpx.Response(
             200,
             json={
@@ -116,12 +117,26 @@ class FakeA2ANetwork:
         return httpx.MockTransport(self)
 
     def calls_for(self, path_suffix: str) -> list[dict[str, Any]]:
-        return [call for call in self.calls if call["path"].endswith(path_suffix)]
+        """Calls for one agent, matched on the trailing path segment.
+
+        ``calls_for("/agents/finance")`` and ``calls_for("/a2a/finance")`` are
+        equivalent: routing is gateway-only now, so the prefix is not meaningful.
+        """
+
+        agent = path_suffix.rstrip("/").split("/")[-1]
+        return [call for call in self.calls if call["path"].rstrip("/").split("/")[-1] == agent]
 
     def _answer_for(self, path: str, agent: str, query: str) -> str:
-        """Verbatim answer for this path, falling back to the generic echo."""
+        """Verbatim answer for this agent, falling back to the generic echo.
 
-        return self.answers.get(path) or AGENT_TEXT.format(agent=agent, query=query)
+        Keys may be written as ``/agents/hr`` or ``/a2a/hr``: routing is
+        gateway-only, so only the agent segment is meaningful.
+        """
+
+        for key, text in self.answers.items():
+            if key.rstrip("/").split("/")[-1] == agent:
+                return text
+        return AGENT_TEXT.format(agent=agent, query=query)
 
 
 @pytest.fixture
@@ -133,10 +148,10 @@ def settings() -> Settings:
         seed_demo_agents=False,
         require_user_identity=True,
         llm_mode="mock",
-        # Tests talk to the in-process fake A2A network directly. Production
-        # policy is gateway-only (see test_a2a_proxy.py); the adapter is unit
-        # tested in direct mode, which the config refuses in prod.
-        a2a_routing="direct",
+        # Tests drive the adapter through a fake gateway (FakeA2ANetwork serves
+        # /a2a/{agent}), mirroring production where the gateway is the only route.
+        litellm_proxy_url="http://test",
+        litellm_proxy_api_key="sk-test-gateway-key",
         policy_mode="observe",
         opa_url=None,
         policy_local_fallback=True,
@@ -230,6 +245,9 @@ def agent_payload(
         "platform": "test",
         "protocol": "a2a",
         "endpoint": endpoint,
+        # Gateway route name: the short segment (finance/hr/it/test), matching how
+        # the fake gateway keys cards. Without it the adapter would use agent_id.
+        "metadata": {"litellm_agent_name": endpoint.rstrip("/").split("/")[-1]},
         "owner": "qa",
         "capabilities": capabilities or ["invoice audit", "duplicate invoice detection"],
         "input_schema": {"type": "object", "properties": {"message": {"type": "string"}}},

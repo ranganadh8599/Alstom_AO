@@ -33,23 +33,21 @@ async def readyz(container: AppContainer = Depends(get_container)):
         database_ok = False
         database_error = str(exc)
 
-    # Agent traffic depends entirely on the LiteLLM gateway: without it no agent
-    # can be reached, so readiness must reflect it rather than reporting "ok"
+    # Agents are only reachable through the LiteLLM gateway: without it no agent
+    # can be called, so readiness must reflect it rather than reporting "ok"
     # while every run would fail.
-    gateway_status = "not_configured"
-    gateway_ok = True
-    if container.settings.a2a_routing == "litellm_proxy":
-        gateway_ok = False
-        try:
-            async with httpx.AsyncClient(timeout=3.0) as client:
-                response = await client.get(f"{container.settings.litellm_proxy_base}/health/liveliness")
-                if response.status_code == 200:
-                    gateway_status = "ok"
-                    gateway_ok = True
-                else:
-                    gateway_status = f"http_{response.status_code}"
-        except httpx.HTTPError as exc:
-            gateway_status = f"unreachable: {type(exc).__name__}"
+    gateway_status = "unreachable"
+    gateway_ok = False
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            response = await client.get(f"{container.settings.litellm_proxy_base}/health/liveliness")
+            if response.status_code == 200:
+                gateway_status = "ok"
+                gateway_ok = True
+            else:
+                gateway_status = f"http_{response.status_code}"
+    except httpx.HTTPError as exc:
+        gateway_status = f"unreachable: {type(exc).__name__}"
 
     healthy = database_ok and gateway_ok
     payload = {
@@ -58,7 +56,6 @@ async def readyz(container: AppContainer = Depends(get_container)):
             "database": "ok" if database_ok else "error",
             "database_error": database_error,
             "adapters": container.adapters.protocols,
-            "a2a_routing": container.settings.a2a_routing,
             "agent_gateway": gateway_status,
             "policy": await container.policy.health(),
             "langfuse": "enabled" if container.tracing.client is not None else "disabled",

@@ -92,8 +92,8 @@ def test_budget_round_trips_hops_through_snapshot():
     budget.record_hop()
     budget.record_hop()
     settings = Settings(environment="test",
-        # adapter tests use fake peers directly; production is gateway-only
-        a2a_routing="direct", database_url="sqlite+aiosqlite:///:memory:")
+        litellm_proxy_url="http://test",
+        litellm_proxy_api_key="sk-test-gateway-key", database_url="sqlite+aiosqlite:///:memory:")
     restored = LLMBudget.from_snapshot(budget.snapshot(), settings)
     assert restored.hops == 2
 
@@ -158,8 +158,8 @@ async def test_emit_alert_posts_and_never_raises(monkeypatch):
     monkeypatch.setattr(alerts, "AsyncClient", FakeClient)
     settings = Settings(
         environment="test",
-        # adapter tests use fake peers directly; production is gateway-only
-        a2a_routing="direct",
+        litellm_proxy_url="http://test",
+        litellm_proxy_api_key="sk-test-gateway-key",
         database_url="sqlite+aiosqlite:///:memory:",
         budget_alert_webhook="https://hooks.example/budget",
     )
@@ -203,8 +203,8 @@ async def budget_app(a2a, request):
     overrides = getattr(request, "param", {})
     settings = Settings(
         environment="test",
-        # adapter tests use fake peers directly; production is gateway-only
-        a2a_routing="direct",
+        litellm_proxy_url="http://test",
+        litellm_proxy_api_key="sk-test-gateway-key",
         database_url="sqlite+aiosqlite:///:memory:",
         seed_demo_agents=False,
         opa_url=None,

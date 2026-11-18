@@ -149,7 +149,11 @@ class AgentRegistryService:
             description=document.get("description") or "Discovered A2A agent",
             platform=str(metadata.get("platform") or "a2a"),
             protocol="a2a",
-            endpoint=str(document.get("url") or endpoint),
+            # The card records where the agent *lives* (used to generate the
+            # gateway config), not where we discovered it. Discovery goes through
+            # the gateway, so the document's url is a proxied path and would be
+            # wrong to persist as the agent endpoint.
+            endpoint=str(endpoint),
             owner=owner_override or str(provider.get("organization") or ""),
             owner_contact=provider.get("url"),
             capabilities=capability_names or ["general"],

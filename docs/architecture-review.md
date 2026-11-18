@@ -77,7 +77,7 @@ flowchart TB
     GW -->|"chat/completions"| LG
     AD -->|"/a2a/{agent} or direct"| LG
     LG --> AG
-    AD -. "refused in prod" .-x AG
+    AD -. "no such path" .-x AG
 
     TR -.->|"OTLP spans"| LF
     OPA -.->|"policies/*.rego"| OPA
@@ -94,7 +94,7 @@ flowchart TB
 | **Policy client** | Per-agent authorization before any call. Calls OPA; falls back to a local Python mirror of the same rules when OPA is unreachable. Records every decision. | `policy/service.py`, `policies/*.rego` |
 | **Approval service** | Computes whether a human must approve, from actions + card risk + policy obligations + deterministic intent inference. Persists the request; supports expiry and separation of duties. | `approvals/service.py` |
 | **LLM gateway** | Single path to models. Provider-agnostic via LiteLLM, with per-run budget, retries, fallbacks, and a deterministic mock for hermetic tests. | `llm/gateway.py` |
-| **A2A adapter** | Calls agents over JSON-RPC 2.0. Handles discovery, auth, retries, idempotent ids, trace propagation, and two routing modes (`direct`, `litellm_proxy`). | `adapters/a2a.py` |
+| **A2A adapter** | Calls agents over JSON-RPC 2.0 **through the LiteLLM gateway only**. Handles discovery, gateway auth, retries, idempotent ids and trace propagation. There is no direct path to an agent. | `adapters/a2a.py` |
 | **Tracer** | One Langfuse trace per run with an `agent` span per invocation, plus an append-only `trace_events` ledger that survives Langfuse outages. | `observability/tracing.py` |
 | **Postgres** | Registry + operational ledger + paused-run checkpoints + approval queue. Single durable store; SQLite in dev. | `db/tables.py` |
 | **OPA** | Rego decisions: agent authorization and approver eligibility. Fail-closed option. | `policies/` |

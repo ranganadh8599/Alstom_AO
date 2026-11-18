@@ -93,11 +93,10 @@ class Settings(BaseSettings):
     run_timeout_seconds: float = 120.0
 
     # --- A2A routing -------------------------------------------------------
-    # Policy: all inter-agent traffic goes through the LiteLLM agent gateway.
-    # `direct` exists only so the adapter can be unit-tested in isolation and is
-    # refused in production (see _validate_a2a_routing). With gateway routing the
-    # gateway — not this service — holds upstream agent credentials.
-    a2a_routing: str = "litellm_proxy"  # litellm_proxy | direct (dev only)
+    # There is exactly one way to reach an agent: the LiteLLM agent gateway.
+    # Direct agent endpoints are not supported anywhere in the codebase, so the
+    # gateway is the single egress path for auth, logging, spend and protocol
+    # conversion, and it — not this service — holds upstream agent credentials.
     litellm_proxy_url: str = "http://localhost:4000"
     litellm_proxy_api_key: str | None = None
     litellm_proxy_api_key_ref: str | None = None
@@ -148,31 +147,14 @@ class Settings(BaseSettings):
             raise ValueError("llm_mode must be 'mock' or 'litellm'")
         return value
 
-    @field_validator("a2a_routing")
-    @classmethod
-    def _validate_a2a_routing(cls, value: str) -> str:
-        value = value.lower().strip()
-        if value not in {"direct", "litellm_proxy"}:
-            raise ValueError("a2a_routing must be 'direct' or 'litellm_proxy'")
-        return value
-
     @model_validator(mode="after")
-    def _production_defaults(self) -> Settings:
-        """Tighten unsafe defaults and enforce deployment policy."""
+    def _gateway_required(self) -> Settings:
+        """The agent gateway is the only route to an agent, so it is mandatory."""
 
-        if self.is_production:
-            # Policy: every inter-agent call must traverse the LiteLLM gateway.
-            # Direct routing would let this service reach agents it should not
-            # talk to, and would put agent credentials here instead of the gateway.
-            if self.a2a_routing != "litellm_proxy":
-                raise ValueError(
-                    "AO_A2A_ROUTING must be 'litellm_proxy' in production: all inter-agent "
-                    "communication must go through the LiteLLM agent gateway."
-                )
-            if not self.litellm_proxy_url:
-                raise ValueError("AO_LITELLM_PROXY_URL is required when routing through the gateway.")
-            if self.debug:
-                raise ValueError("AO_DEBUG must be false in production")
+        if not self.litellm_proxy_url.strip():
+            raise ValueError("AO_LITELLM_PROXY_URL is required: agents are only reachable via the gateway.")
+        if self.is_production and self.debug:
+            raise ValueError("AO_DEBUG must be false in production")
         return self
 
     @field_validator("synthesis_grounding")
@@ -275,12 +257,6 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.environment.lower() in {"prod", "production"}
-
-    @property
-    def uses_litellm_proxy(self) -> bool:
-        """True when agent traffic is routed through the LiteLLM agent gateway."""
-
-        return self.a2a_routing == "litellm_proxy" and bool(self.litellm_proxy_url)
 
     @property
     def litellm_proxy_base(self) -> str:

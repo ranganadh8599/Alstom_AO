@@ -39,7 +39,7 @@ consequential**, and traces every hop to **Langfuse** with dual identity.
 | Central agent registry | Postgres `agent_cards`, mandatory identity/capability card |
 | Dynamic routing | LLM planner (LiteLLM) **plus** deterministic heuristic fallback and hybrid merge |
 | A2A protocol | JSON-RPC 2.0 `message/send` with legacy `tasks/send` fallback, agent-card discovery |
-| LiteLLM agent gateway | Optional A2A routing through `POST /a2a/{agent}` with a virtual key, trace-header and protocol-version propagation |
+| LiteLLM agent gateway | **Mandatory** A2A routing through `POST /a2a/{agent}` ? no direct agent-to-agent calls in production; trace-header and protocol-version propagation |
 | Robust "no agent" handling | Explicit `no_match`, `invalid`, `denied` terminal states with user-facing messages |
 | Policy | OPA (`policies/*.rego`) with local fallback, `observe` / `enforce` modes |
 | Human-in-the-loop | Dynamic risk assessment + LangGraph `interrupt`; survives restart with a Postgres checkpointer |
@@ -82,9 +82,7 @@ flowchart LR
     S -.synthesis.-> LG
 
     E --> AD["A2A adapter<br/>JSON-RPC 2.0"]
-    AD --> ROUTE{"AO_A2A_ROUTING"}
-    ROUTE -->|litellm_proxy| GW["LiteLLM agent gateway<br/>/a2a/{agent}"]
-    ROUTE -->|direct| AGENTS
+    AD --> GW["LiteLLM agent gateway<br/>/a2a/{agent}"]
     GW --> AGENTS
 
     subgraph AGENTS["Registered A2A agents"]
@@ -357,7 +355,7 @@ Highlights:
 | `AO_MAX_AGENT_HOPS` | `8` | Agent calls per run |
 | `AO_MAX_A2A_DEPTH` | `3` | Inbound delegation depth before fan-out is refused |
 | `AO_POLICY_MODE` | `observe` | `observe` or `enforce` |
-| `AO_A2A_ROUTING` | `direct` | `direct` or `litellm_proxy` (agent gateway) |
+| `AO_A2A_ROUTING` | `litellm_proxy` | **Gateway-only in production**; `direct` is dev-only and refused when `AO_ENVIRONMENT=prod` |
 | `AO_LITELLM_PROXY_URL` | `http://localhost:4000` | LiteLLM agent gateway base URL |
 | `AO_LITELLM_PROXY_API_KEY` | unset | Virtual key; required in proxy mode |
 | `AO_LITELLM_A2A_PROTOCOL_VERSION` | `0.3` | Wire format the gateway serves (`0.3` or `1.0`) |

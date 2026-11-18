@@ -40,6 +40,8 @@ CATALOG = [
 def settings(**overrides) -> Settings:
     return Settings(
         environment="test",
+        # adapter tests use fake peers directly; production is gateway-only
+        a2a_routing="direct",
         database_url="sqlite+aiosqlite:///:memory:",
         opa_url=None,
         llm_mode="mock",

@@ -77,7 +77,7 @@ flowchart TB
     GW -->|"chat/completions"| LG
     AD -->|"/a2a/{agent} or direct"| LG
     LG --> AG
-    AD -.->|"AO_A2A_ROUTING=direct"| AG
+    AD -. "refused in prod" .-x AG
 
     TR -.->|"OTLP spans"| LF
     OPA -.->|"policies/*.rego"| OPA

@@ -31,6 +31,10 @@ services:
   mock-agents:
     build: .
     command: ["uvicorn", "examples.mock_a2a_agents.app:app", "--host", "0.0.0.0", "--port", "9101"]
+    environment:
+      # The address the agent card advertises must be reachable by the caller.
+      # The LiteLLM gateway is a separate container, so "localhost" would be wrong.
+      AO_AGENT_PUBLIC_BASE_URL: http://mock-agents:9101
     ports:
       - "9101:9101"
     healthcheck:

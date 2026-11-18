@@ -307,3 +307,60 @@ async def test_health_probe_uses_the_gateway_in_proxy_mode(
     assert health.status_code == 200
     assert health.json()["health"] == "healthy"
     assert any(call["path"].endswith("/.well-known/agent.json") for call in gateway.calls)
+
+# ---------------------------------------------------------------------------
+# gateway-only policy for inter-agent traffic
+# ---------------------------------------------------------------------------
+
+
+def test_default_routing_is_the_gateway():
+    from alstom_ao.config import Settings
+
+    assert Settings(environment="dev").a2a_routing == "litellm_proxy"
+
+
+def test_production_rejects_direct_agent_routing():
+    """Policy: no direct agent-to-agent calls in production."""
+
+    from alstom_ao.config import Settings
+
+    with pytest.raises(ValueError) as exc:
+        Settings(environment="prod", a2a_routing="direct")
+    assert "litellm_proxy" in str(exc.value)
+
+
+def test_production_requires_a_gateway_url():
+    from alstom_ao.config import Settings
+
+    with pytest.raises(ValueError) as exc:
+        Settings(environment="prod", litellm_proxy_url="")
+    assert "AO_LITELLM_PROXY_URL" in str(exc.value)
+
+
+def test_direct_routing_is_still_allowed_outside_production():
+    """Kept for adapter unit tests; never a production option."""
+
+    from alstom_ao.config import Settings
+
+    assert Settings(environment="test", a2a_routing="direct").a2a_routing == "direct"
+
+
+async def test_readyz_reports_the_agent_gateway(settings, a2a):
+    """Readiness must not claim "ok" when agent traffic has no gateway."""
+
+    from alstom_ao.main import create_app, initialize_app, shutdown_app
+
+    gateway_down = settings.model_copy(update={"a2a_routing": "litellm_proxy", "litellm_proxy_url": "http://127.0.0.1:1"})
+    app = create_app(gateway_down, a2a_transport=a2a.transport)
+    await initialize_app(app)
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/readyz")
+        assert response.status_code == 503
+        body = response.json()
+        assert body["status"] == "degraded"
+        assert body["checks"]["a2a_routing"] == "litellm_proxy"
+        assert body["checks"]["agent_gateway"].startswith("unreachable")
+    finally:
+        await shutdown_app(app)

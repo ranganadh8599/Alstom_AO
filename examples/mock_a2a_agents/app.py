@@ -7,10 +7,15 @@ integrated agent has to expose:
 * ``POST /agents/{name}`` - JSON-RPC 2.0 ``message/send`` (and legacy ``tasks/send``)
 
 Run with:  uvicorn examples.mock_a2a_agents.app:app --port 9101
+
+The URL advertised in the agent card must be reachable *by the caller*. A gateway
+in another container cannot reach ``localhost``, so set ``AO_AGENT_PUBLIC_BASE_URL``
+(e.g. ``http://mock-agents:9101`` in compose) rather than hardcoding the host.
 """
 
 from __future__ import annotations
 
+import os
 import re
 import uuid
 from typing import Any
@@ -19,6 +24,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 app = FastAPI(title="Mock A2A Agents", version="1.0.0")
+
+PUBLIC_BASE_URL = os.environ.get("AO_AGENT_PUBLIC_BASE_URL", "http://localhost:9101").rstrip("/")
 
 AGENTS: dict[str, dict[str, Any]] = {
     "finance": {
@@ -71,7 +78,7 @@ AGENTS: dict[str, dict[str, Any]] = {
 
 def _card(name: str) -> dict[str, Any]:
     agent = AGENTS[name]
-    url = f"http://localhost:9101/agents/{name}"
+    url = f"{PUBLIC_BASE_URL}/agents/{name}"
     return {
         # A2A 0.3: a2a-sdk 1.x (used by the LiteLLM gateway) refuses to build a
         # client without an explicit transport binding, so the card must declare
@@ -87,7 +94,7 @@ def _card(name: str) -> dict[str, Any]:
         "defaultInputModes": ["text/plain"],
         "defaultOutputModes": ["text/plain", "application/json"],
         "skills": agent["skills"],
-        "provider": {"organization": "Alstom Demo", "url": "http://localhost:9101"},
+        "provider": {"organization": "Alstom Demo", "url": PUBLIC_BASE_URL},
         "metadata": {
             "alstom_agent_id": f"demo-{name}-agent",
             "alstom_risk_level": "high" if name == "finance" else ("medium" if name == "it" else "low"),

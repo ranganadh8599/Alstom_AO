@@ -154,6 +154,7 @@ def _settings(**overrides) -> Settings:
         seed_demo_agents=False,
         opa_url=None,
         llm_mode="mock",
+        a2a_routing="direct",
     )
     base.update(overrides)
     return Settings(**base)

@@ -34,7 +34,8 @@ services:
       AO_POLICY_MODE: enforce
       AO_OPA_URL: http://opa:8181
       AO_POLICY_LOCAL_FALLBACK: "true"
-      AO_A2A_ROUTING: direct
+      # Policy: no direct agent-to-agent calls; everything traverses the gateway.
+      AO_A2A_ROUTING: litellm_proxy
       AO_SYNTHESIS_GROUNDING: ${AO_SYNTHESIS_GROUNDING:-warn}
       AO_GUARDRAILS_MODE: ${AO_GUARDRAILS_MODE:-warn}
       AO_OUTPUT_SCHEMA_MODE: ${AO_OUTPUT_SCHEMA_MODE:-warn}

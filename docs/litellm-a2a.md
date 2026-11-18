@@ -1,12 +1,26 @@
 # LiteLLM agent gateway (A2A)
 
-The orchestration layer can reach agents in two ways. The wire protocol is
-identical in both; only the **address and credentials** change.
+**Policy: every inter-agent call goes through the LiteLLM agent gateway.**
+There are no direct agent-to-agent calls. This is enforced, not just documented:
 
-| Mode | `AO_A2A_ROUTING` | JSON-RPC target | Auth we send |
-|---|---|---|---|
-| Direct | `direct` (default) | `card.endpoint` | the agent's own `auth` block (`env:` secret) |
-| LiteLLM gateway | `litellm_proxy` | `{AO_LITELLM_PROXY_URL}/a2a/{agent_name}` | LiteLLM virtual key |
+- `AO_A2A_ROUTING` defaults to `litellm_proxy`;
+- startup **fails** if `AO_ENVIRONMENT=prod` and routing is anything else;
+- `/readyz` reports the gateway and returns 503 when it is unreachable, so a
+  deployment cannot claim readiness while agent traffic has no route.
+
+```mermaid
+flowchart LR
+    O["Orchestrator<br/>registry · policy · approvals<br/>per-run budget · tracing"] -->|"POST {gateway}/a2a/{agent}<br/>JSON-RPC message/send"| L["LiteLLM agent gateway<br/>routes · logs · spend attribution<br/>agent credentials · version conversion"]
+    L --> A1["Finance agent"]
+    L --> A2["HR agent"]
+    L --> A3["IT agent"]
+    O -. "blocked in production" .-x A1
+```
+
+The dotted edge is the point: the orchestrator has no path to an agent that
+bypasses the gateway. With gateway routing the **gateway** holds upstream agent
+credentials, so `auth` blocks on cards are advisory metadata rather than secrets
+the orchestrator uses.
 
 ```mermaid
 flowchart LR
@@ -14,7 +28,7 @@ flowchart LR
     L -->|routes, logs, budgets,<br/>version conversion| A1["Finance agent"]
     L --> A2["HR agent"]
     L --> A3["IT agent"]
-    O -.->|"direct mode instead"| A1
+    O -. "blocked in production" .-x A1
 ```
 
 The gateway *can* enforce its own budgets, but this deployment deliberately leaves
@@ -204,7 +218,19 @@ curl -s localhost:8080/v1/runs/<run_id>/trace -H 'X-User-Id: alice' \
   | jq '.events[] | select(.agent_id != null) | {action, agent_id, trace_id}'
 ```
 
-## Switching back
+## Why there is no direct mode in production
 
-Set `AO_A2A_ROUTING=direct`. Nothing else changes: cards already carry their own
-`endpoint` and `auth`, and every test covers both modes.
+`direct` still exists because the A2A adapter is unit-tested against fake peers
+without a gateway. It is refused at startup in production:
+
+```
+AO_ENVIRONMENT=prod + AO_A2A_ROUTING=direct
+  -> ValueError: AO_A2A_ROUTING must be 'litellm_proxy' in production
+```
+
+Two reasons the gateway is mandatory:
+
+1. **One egress path.** A single choke point for auth, logging, spend and
+   version conversion is auditable; N direct paths are not.
+2. **Credential custody.** Agent secrets live in the gateway instead of in this
+   service, so a compromise of the orchestrator does not yield agent access.

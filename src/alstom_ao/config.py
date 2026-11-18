@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     service_name: str = "agent-orchestrator"
 
     # --- LLM gateway -----------------------------------------------------
-    llm_mode: str = "mock"  # mock | litellm
+    llm_mode: str = "litellm"  # mock | litellm
     llm_model: str = "openai/gpt-4o-mini"
     llm_api_base: str | None = None
     llm_api_key: str | None = None
@@ -92,8 +92,12 @@ class Settings(BaseSettings):
     max_parallel_agents: int = 4
     run_timeout_seconds: float = 120.0
 
-    # --- A2A routing: direct to the agent, or through the LiteLLM agent gateway
-    a2a_routing: str = "direct"  # direct | litellm_proxy
+    # --- A2A routing -------------------------------------------------------
+    # Policy: all inter-agent traffic goes through the LiteLLM agent gateway.
+    # `direct` exists only so the adapter can be unit-tested in isolation and is
+    # refused in production (see _validate_a2a_routing). With gateway routing the
+    # gateway — not this service — holds upstream agent credentials.
+    a2a_routing: str = "litellm_proxy"  # litellm_proxy | direct (dev only)
     litellm_proxy_url: str = "http://localhost:4000"
     litellm_proxy_api_key: str | None = None
     litellm_proxy_api_key_ref: str | None = None
@@ -154,14 +158,21 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _production_defaults(self) -> Settings:
-        """Tighten unsafe defaults automatically when the environment is production."""
+        """Tighten unsafe defaults and enforce deployment policy."""
 
         if self.is_production:
-            # `model_config` allows mutation here: this runs once at construction.
+            # Policy: every inter-agent call must traverse the LiteLLM gateway.
+            # Direct routing would let this service reach agents it should not
+            # talk to, and would put agent credentials here instead of the gateway.
+            if self.a2a_routing != "litellm_proxy":
+                raise ValueError(
+                    "AO_A2A_ROUTING must be 'litellm_proxy' in production: all inter-agent "
+                    "communication must go through the LiteLLM agent gateway."
+                )
+            if not self.litellm_proxy_url:
+                raise ValueError("AO_LITELLM_PROXY_URL is required when routing through the gateway.")
             if self.debug:
                 raise ValueError("AO_DEBUG must be false in production")
-            # Seeding is refused at startup (see initialize_app) because a hard
-            # failure is clearer than a silent flip; we only note other hazards.
         return self
 
     @field_validator("synthesis_grounding")

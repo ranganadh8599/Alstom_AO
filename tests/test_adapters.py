@@ -25,6 +25,9 @@ def settings(**overrides) -> Settings:
         environment="test",
         database_url="sqlite+aiosqlite:///:memory:",
         opa_url=None,
+        # These tests exercise the adapter against fake peers directly.
+        # Production routing is gateway-only and covered in test_a2a_proxy.py.
+        a2a_routing="direct",
         a2a_timeout_seconds=2,
         a2a_max_retries=0,
     )

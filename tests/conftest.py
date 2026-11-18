@@ -133,6 +133,10 @@ def settings() -> Settings:
         seed_demo_agents=False,
         require_user_identity=True,
         llm_mode="mock",
+        # Tests talk to the in-process fake A2A network directly. Production
+        # policy is gateway-only (see test_a2a_proxy.py); the adapter is unit
+        # tested in direct mode, which the config refuses in prod.
+        a2a_routing="direct",
         policy_mode="observe",
         opa_url=None,
         policy_local_fallback=True,

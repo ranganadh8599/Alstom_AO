@@ -21,7 +21,7 @@ approval and tracing layers are untouched.
 
 | Concern | Behavior |
 |---|---|
-| Routing | `AO_A2A_ROUTING=direct` → `card.endpoint`; `litellm_proxy` → `{gateway}/a2a/{agent}` |
+| Routing | **Gateway-only in production**: `litellm_proxy` → `{gateway}/a2a/{agent}`. `direct` exists only for adapter unit tests and is refused when `AO_ENVIRONMENT=prod` |
 | Discovery | `GET {base}/.well-known/agent-card.json`, then legacy `/.well-known/agent.json` |
 | Invocation | JSON-RPC 2.0 `message/send` with `configuration.blocking=true` |
 | Legacy peers | On HTTP 404/405/501, retries with `tasks/send` |
@@ -33,13 +33,16 @@ approval and tracing layers are untouched.
 | Response | Merges `status.message.parts`, `artifacts[].parts`; maps `failed/canceled/rejected` to failure |
 | Errors | JSON-RPC `error` → `AgentInvocationError`; never leaks into an unhandled 500 |
 
-### Gateway mode
+### Gateway mode (the only production mode)
 
 `AO_A2A_ROUTING=litellm_proxy` posts the same JSON-RPC envelope to the LiteLLM
 agent gateway instead of the agent, adding `x-litellm-api-key`,
 `A2A-Version`, `X-LiteLLM-Trace-Id` and `X-LiteLLM-Agent-Id`. The legacy
 `tasks/send` fallback is disabled there because the gateway exposes a fixed method
 set. See [litellm-a2a.md](litellm-a2a.md).
+
+In this mode the card's `endpoint` is metadata for the gateway's own config (see
+`scripts/export_litellm_agents.py`); the orchestrator never dials it.
 
 ### What a peer must expose
 

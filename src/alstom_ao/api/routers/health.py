@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import httpx
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
@@ -32,18 +33,39 @@ async def readyz(container: AppContainer = Depends(get_container)):
         database_ok = False
         database_error = str(exc)
 
+    # Agent traffic depends entirely on the LiteLLM gateway: without it no agent
+    # can be reached, so readiness must reflect it rather than reporting "ok"
+    # while every run would fail.
+    gateway_status = "not_configured"
+    gateway_ok = True
+    if container.settings.a2a_routing == "litellm_proxy":
+        gateway_ok = False
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                response = await client.get(f"{container.settings.litellm_proxy_base}/health/liveliness")
+                if response.status_code == 200:
+                    gateway_status = "ok"
+                    gateway_ok = True
+                else:
+                    gateway_status = f"http_{response.status_code}"
+        except httpx.HTTPError as exc:
+            gateway_status = f"unreachable: {type(exc).__name__}"
+
+    healthy = database_ok and gateway_ok
     payload = {
-        "status": "ok" if database_ok else "degraded",
+        "status": "ok" if healthy else "degraded",
         "checks": {
             "database": "ok" if database_ok else "error",
             "database_error": database_error,
             "adapters": container.adapters.protocols,
+            "a2a_routing": container.settings.a2a_routing,
+            "agent_gateway": gateway_status,
             "policy": await container.policy.health(),
             "langfuse": "enabled" if container.tracing.client is not None else "disabled",
             "llm_mode": container.settings.llm_mode,
         },
     }
-    return payload if database_ok else JSONResponse(payload, status_code=503)
+    return payload if healthy else JSONResponse(payload, status_code=503)
 
 
 @router.get("/metrics", response_class=PlainTextResponse)

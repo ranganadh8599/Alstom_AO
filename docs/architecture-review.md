@@ -90,7 +90,7 @@ flowchart TB
 | **LibreChat** | Chat UI; presents the orchestration layer as a model spec ("Alstom Agents") with conversation starters. Substitutes the signed-in user into outbound headers. Never decides routing. | `LibreChat/librechat.yaml` |
 | **FastAPI surface** | Two entry shapes over the same engine: native (`/v1/orchestrate`) and OpenAI-compatible (`/v1/chat/completions`, streaming SSE). Extracts dual identity, validates input, exposes registry/approval/run/trace endpoints. | `src/alstom_ao/main.py`, `api/routers/*` |
 | **LangGraph workflow** | The decision engine. Seven nodes, conditional exits on every terminal outcome. Details in §3. | `orchestrator/graph.py` |
-| **Agent registry** | Source of truth for *who* an agent is and *what it may do*: identity, capabilities, schemas, permissions, version, risk, environment, health. Also produces the role-filtered planner catalog. | `registry/service.py`, `db/repositories.py` |
+| **Agent registry** | Source of truth for *who* an agent is and *what it may do*: identity, capabilities, schemas, permissions, version, risk, environment, health. Also produces the role-filtered planner catalog. **`endpoint` and `auth` are catalogue metadata** for generating gateway config ? the service never dials `endpoint` and never sends `auth` credentials. | `registry/service.py`, `db/repositories.py` |
 | **Policy client** | Per-agent authorization before any call. Calls OPA; falls back to a local Python mirror of the same rules when OPA is unreachable. Records every decision. | `policy/service.py`, `policies/*.rego` |
 | **Approval service** | Computes whether a human must approve, from actions + card risk + policy obligations + deterministic intent inference. Persists the request; supports expiry and separation of duties. | `approvals/service.py` |
 | **LLM gateway** | Single path to models. Provider-agnostic via LiteLLM, with per-run budget, retries, fallbacks, and a deterministic mock for hermetic tests. | `llm/gateway.py` |
@@ -312,7 +312,7 @@ Design rule: **a terminal state is always persisted and always explained**; the 
 2. **Approval is API-only.** The chat shows the approval ID and endpoint; there is no in-UI approve action. Acceptable for the pilot, or blocking?
 3. **Two roles only (`admin`/`user`).** Business roles are not modelled; per-role agent filtering is effectively off for UI users. Confirm this is acceptable until the IdP mapping exists.
 4. **`admin` is global and the sole approver.** That removes separation of duties except "cannot approve your own request". A single-admin org cannot approve its own writes. Intended?
-5. **Agent credential custody.** `direct` mode holds agent secrets in AO; `litellm_proxy` mode moves them to the gateway. Which is the production stance?
+5. ~~Agent credential custody.~~ **Decided:** gateway-only. Agent credentials live in the gateway; the service never holds or sends them, and the direct code path was deleted.
 6. **Honesty controls default to `warn`.** Grounding can be `strict`; guardrails can `block`. Which defaults should ship, given they change user-visible behaviour?
 7. **No rate limiting** in AO. Should this live at the edge (ingress) or in the service?
 8. **Agent accuracy is out of scope** of the proxy: grounding compares answer ↔ agent, so a wrong agent number is surfaced (cross-agent disagreement) but not corrected. Is upstream agent verification owned elsewhere?

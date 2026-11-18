@@ -23,12 +23,12 @@ version that will execute.
 | `description` | yes | ≥10 chars; used by the planner and heuristic |
 | `platform` | no | owning platform (e.g. `alstom-finance`) |
 | `protocol` | no | `a2a` (default), `mcp`, `rest` — must have an adapter |
-| `endpoint` | yes | `http(s)://…`, normalized without trailing slash |
+| `endpoint` | yes | `http(s)://…`, normalized without trailing slash. **Not dialled by the orchestrator** — see below |
 | `owner`, `owner_contact` | no | accountability |
 | `capabilities` | yes | ≥1; the routing signal |
 | `capability_details` | no | per-capability descriptions/schemas |
 | `input_schema`, `output_schema` | no | JSON Schema |
-| `auth` | no | `none`/`bearer`/`api_key`/`oauth2` + `secret_ref` |
+| `auth` | no | Recorded for the gateway: `none`/`bearer`/`api_key`/`oauth2` + `secret_ref`. **Inert in this service** — see below |
 | `permissions` | no | roles, actions, scopes, classification, approval triggers |
 | `version` | no | default `1.0.0` |
 | `status` | no | `active`/`inactive`/`deprecated` |
@@ -46,10 +46,28 @@ version that will execute.
 | `high_impact_actions` | Always trigger approval |
 | `requires_approval_for` | Always trigger approval for these actions |
 | `required_scopes` | Service identity must hold them |
-| `data_classification` | `restricted` needs `data-steward`/`platform-admin` |
+| `data_classification` | `restricted` needs `admin` |
 
 > A `high` risk card with no `requires_approval_for` automatically gets its
 > high-impact allowed actions as approval triggers. Read-only actions never pause.
+
+## `endpoint` and `auth` are metadata, not a call path
+
+Agents are reachable **only** through the LiteLLM agent gateway. There is no
+direct-agent code path, so neither of these fields is used to make a request:
+
+| Field | Who actually uses it |
+|---|---|
+| `endpoint` | The gateway's own config. `scripts/export_litellm_agents.py` reads it to generate `agent_card_params.url`; the orchestrator never dials it. |
+| `auth` | The gateway. It holds upstream credentials; this service authenticates to the gateway with `AO_LITELLM_PROXY_API_KEY`. |
+
+They remain required/advisory because the registry is the authoritative catalogue
+from which gateway config is generated. Do **not** expect editing `auth` to change
+how a call authenticates — that lives in `litellm/config.yaml`.
+
+The gateway addresses an agent by name: `card.metadata.litellm_agent_name` when
+present, otherwise `card.agent_id`. Set `litellm_agent_name` when the gateway's
+registration name differs from the registry id.
 
 ## Secrets
 
@@ -59,7 +77,10 @@ Never put a secret in a card. Use a reference:
 {"auth": {"type": "bearer", "secret_ref": "env:AO_SECRET_FINANCE_TOKEN"}}
 ```
 
-The orchestrator resolves it at call time and never logs or persists it.
+In gateway-only mode this reference is a *hint for whoever maintains the gateway
+config*: **this service never resolves or sends it.** Keeping secrets out of cards
+still matters — cards are stored in Postgres and returned by the API — but the
+secret itself belongs in the gateway's environment, not here.
 
 ## Example
 
@@ -77,7 +98,7 @@ The orchestrator resolves it at call time and never logs or persists it.
   "output_schema": {"type": "object", "properties": {"answer": {"type": "string"}}},
   "auth": {"type": "none"},
   "permissions": {
-    "allowed_roles": ["user", "finance", "approver"],
+    "allowed_roles": ["user", "admin"],
     "allowed_actions": ["read", "query", "analyze", "write"],
     "requires_approval_for": ["write", "update", "payment"],
     "data_classification": "confidential"

@@ -59,7 +59,6 @@ async def readyz(container: AppContainer = Depends(get_container)):
             "agent_gateway": gateway_status,
             "policy": await container.policy.health(),
             "langfuse": "enabled" if container.tracing.client is not None else "disabled",
-            "llm_mode": container.settings.llm_mode,
         },
     }
     return payload if healthy else JSONResponse(payload, status_code=503)

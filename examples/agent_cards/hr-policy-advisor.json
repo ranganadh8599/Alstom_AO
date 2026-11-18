@@ -4,7 +4,7 @@
   "description": "Answers employee questions about HR policy: leave, travel, remote work, benefits and onboarding. Read-only; cites the policy document and section.",
   "platform": "alstom-people",
   "protocol": "a2a",
-  "endpoint": "http://localhost:9101/agents/hr",
+  "endpoint": "https://hr-agents.internal.example/agents/hr",
   "owner": "People & Culture",
   "owner_contact": "people@example.com",
   "capabilities": [

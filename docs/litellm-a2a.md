@@ -104,7 +104,7 @@ agents:
   - agent_name: finance-invoice-auditor
     agent_card_params:
       name: Finance Invoice Auditor
-      url: http://mock-agents:9101/agents/finance
+      url: https://finance-agents.internal.example/agents/finance
       version: 2.3.0
       protocolVersion: "0.3"
     litellm_params:
@@ -117,7 +117,7 @@ authoritative and regenerate the gateway block:
 ```bash
 python scripts/export_litellm_agents.py \
   --base-url http://localhost:8080 \
-  --user-id admin --roles platform-admin \
+  --user-id admin --roles admin \
   --out litellm/agents.generated.yaml
 ```
 
@@ -211,7 +211,7 @@ curl -s localhost:4000/a2a/finance-invoice-auditor/.well-known/agent.json
 
 # our health probe goes through the gateway in proxy mode
 curl -s -X POST localhost:8080/v1/agents/finance-invoice-auditor/health \
-  -H 'X-User-Id: admin' -H 'X-User-Roles: platform-admin'
+  -H 'X-User-Id: admin' -H 'X-User-Roles: admin'
 
 # a run stores the gateway trace id on every span
 curl -s localhost:8080/v1/runs/<run_id>/trace -H 'X-User-Id: alice' \
@@ -221,9 +221,8 @@ curl -s localhost:8080/v1/runs/<run_id>/trace -H 'X-User-Id: alice' \
 ## Why there is no direct mode
 
 The direct code path was deleted: the adapter has no branch that dials
-`card.endpoint`, and there is no configuration that re-enables one. Tests drive a
-fake gateway (`FakeA2ANetwork`) that serves `/a2a/{agent}`, so the tested path is
-the production path.
+`card.endpoint`, and there is no configuration that re-enables one. The adapter
+always calls the gateway shape, so the single code path is the production path.
 
 Two reasons the gateway is mandatory:
 

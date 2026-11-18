@@ -92,7 +92,7 @@ async def run_mock(cards_path: Path) -> list[CaseResult]:
     from alstom_ao.domain.models import AgentCard
     from alstom_ao.orchestrator.planner import heuristic_plan
 
-    settings = Settings(environment="eval", database_url="sqlite+aiosqlite:///:memory:", seed_demo_agents=False)
+    settings = Settings(environment="eval", database_url="sqlite+aiosqlite:///:memory:")
     cards = await asyncio.to_thread(_load_cards, cards_path)
     for card in cards:
         card["environment"] = "eval"

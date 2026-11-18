@@ -4,7 +4,7 @@
   "description": "Audits vendor invoices, checks purchase-order and contract alignment, flags duplicate or out-of-policy charges, and prepares correction requests. Never pays an invoice without human approval.",
   "platform": "alstom-finance",
   "protocol": "a2a",
-  "endpoint": "http://localhost:9101/agents/finance",
+  "endpoint": "https://finance-agents.internal.example/agents/finance",
   "owner": "Finance Operations",
   "owner_contact": "finance-ops@example.com",
   "capabilities": [

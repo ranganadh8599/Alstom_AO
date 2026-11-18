@@ -28,13 +28,15 @@ services:
       timeout: 3s
       retries: 10
 
-  mock-agents:
+  # One reference A2A agent so a fresh checkout has something to test against.
+  # Not part of the platform: replace or remove it once real agents are registered.
+  reference-agent:
     build: .
-    command: ["uvicorn", "examples.mock_a2a_agents.app:app", "--host", "0.0.0.0", "--port", "9101"]
+    command: ["uvicorn", "examples.reference_agent.app:app", "--host", "0.0.0.0", "--port", "9101"]
     environment:
       # The address the agent card advertises must be reachable by the caller.
       # The LiteLLM gateway is a separate container, so "localhost" would be wrong.
-      AO_AGENT_PUBLIC_BASE_URL: http://mock-agents:9101
+      AO_AGENT_PUBLIC_BASE_URL: http://reference-agent:9101
     ports:
       - "9101:9101"
     healthcheck:
@@ -42,6 +44,22 @@ services:
       interval: 10s
       timeout: 3s
       retries: 10
+
+  # Reference MCP server: three read-only tools over MCP streamable HTTP.
+  # Not part of the platform — it exists so the MCP adapter has something to call.
+  # LiteLLM dials it at http://mcp-reference:9102/mcp; the orchestrator never does.
+  mcp-reference:
+    build: ./examples/reference_mcp
+    environment:
+      MCP_PORT: "9102"
+    ports:
+      - "9102:9102"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket,sys; s=socket.socket(); sys.exit(0 if s.connect_ex(('127.0.0.1',9102))==0 else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
 
   # LiteLLM agent gateway: owns upstream agent routing, logs, spend and protocol
   # version conversion. The orchestration layer calls POST /a2a/{agent} here.
@@ -52,11 +70,17 @@ services:
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-alstom-master}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ALSTOM_AO_AGENT_KEY: ${ALSTOM_AO_AGENT_KEY:-sk-alstom-agent}
+      # Upstream MCP credential. Kept here, never in a card: cards are stored in
+      # Postgres and returned by the API.
+      SINEQUA_MCP_API_KEY: ${SINEQUA_MCP_API_KEY:-}
       STORE_MODEL_IN_DB: "False"
     volumes:
       - ./litellm/config.yaml:/app/config.yaml:ro
     ports:
       - "4000:4000"
+    depends_on:
+      mcp-reference:
+        condition: service_started
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:4000/health/liveliness').status==200 else 1)"]
       interval: 15s
@@ -71,7 +95,7 @@ services:
         condition: service_healthy
       opa:
         condition: service_started
-      mock-agents:
+      reference-agent:
         condition: service_started
       litellm:
         condition: service_started
@@ -79,15 +103,9 @@ services:
       AO_ENVIRONMENT: dev
       AO_DATABASE_URL: postgresql+asyncpg://alstom:alstom@postgres:5432/alstom_ao
       AO_DB_AUTO_CREATE: "true"
-      AO_SEED_DEMO_AGENTS: "true"
-      AO_DEMO_AGENT_BASE_URL: http://mock-agents:9101
-      AO_LLM_MODE: ${AO_LLM_MODE:-mock}
       AO_LLM_MODEL: ${AO_LLM_MODEL:-openai/gpt-4o-mini}
       AO_LLM_API_KEY: ${AO_LLM_API_KEY:-}
       AO_LLM_API_BASE: ${AO_LLM_API_BASE:-}
-      # Agent traffic goes through the LiteLLM agent gateway. Set to "direct"
-      # to call each agent endpoint instead.
-      # Agents are reached only via the LiteLLM gateway (no direct mode).
       AO_SYNTHESIS_GROUNDING: ${AO_SYNTHESIS_GROUNDING:-warn}
       AO_LITELLM_PROXY_URL: http://litellm:4000
       AO_LITELLM_PROXY_API_KEY: ${LITELLM_MASTER_KEY:-sk-alstom-master}

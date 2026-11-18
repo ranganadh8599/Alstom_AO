@@ -1,0 +1,35 @@
+{
+  "agent_id": "finance-invoice-auditor",
+  "name": "Finance Invoice Auditor",
+  "description": "Audits vendor invoices, detects duplicate charges and checks purchase orders.",
+  "platform": "reference",
+  "protocol": "a2a",
+  "endpoint": "http://reference-agent:9101/agents/finance",
+  "owner": "Reference",
+  "capabilities": [
+    "invoice audit",
+    "duplicate invoice detection",
+    "vendor payment status"
+  ],
+  "input_schema": {
+    "type": "object",
+    "properties": { "message": { "type": "string" } }
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": { "answer": { "type": "string" } }
+  },
+  "auth": { "type": "none" },
+  "permissions": {
+    "allowed_roles": ["user", "admin"],
+    "allowed_actions": ["read", "query", "analyze", "write"],
+    "requires_approval_for": ["write", "update", "payment"],
+    "data_classification": "internal"
+  },
+  "version": "1.0.0",
+  "status": "active",
+  "environment": "dev",
+  "risk_level": "high",
+  "tags": ["finance", "invoice"],
+  "examples": ["Check invoice INV-2024-0912 for duplicate charges"]
+}

@@ -212,8 +212,6 @@ class LLMBudget:
 
 
 class ModelGateway(ABC):
-    is_mock: bool = False
-
     def __init__(self, settings: Settings, budget: LLMBudget) -> None:
         self.settings = settings
         self.budget = budget
@@ -254,39 +252,8 @@ class ModelGateway(ABC):
         return parse_json_object(result.text), result
 
 
-class MockGateway(ModelGateway):
-    """Deterministic offline gateway.
-
-    Planning still works because the planner uses the heuristic selector when the
-    gateway is a mock; this class only needs to produce stable prose so the demo
-    and the tests are hermetic.
-    """
-
-    is_mock = True
-
-    async def complete_text(
-        self,
-        *,
-        system: str,
-        user: str,
-        temperature: float | None = None,
-        max_tokens: int | None = None,
-    ) -> LLMResult:
-        started = time.perf_counter()
-        self.budget.ensure_can_call()
-        text = (
-            "Mock LLM gateway is enabled. Set AO_LLM_MODE=litellm and configure a model "
-            "to generate synthesized answers."
-        )
-        result = LLMResult(text=text, model="mock/echo", latency_ms=int((time.perf_counter() - started) * 1000))
-        self.budget.charge(result)
-        return result
-
-
 class LiteLLMGateway(ModelGateway):
     """Provider-agnostic gateway. Supports OpenAI, Anthropic, Azure, Ollama, vLLM..."""
-
-    is_mock = False
 
     async def complete_text(
         self,
@@ -376,30 +343,6 @@ class LiteLLMGateway(ModelGateway):
         )
 
 
-class ScriptedGateway(ModelGateway):
-    """Test double: returns queued responses and preserves usage accounting."""
-
-    def __init__(self, settings: Settings, budget: LLMBudget, responses: list[str] | None = None) -> None:
-        super().__init__(settings, budget)
-        self.responses = list(responses or [])
-        self.calls: list[dict] = []
-
-    async def complete_text(
-        self,
-        *,
-        system: str,
-        user: str,
-        temperature: float | None = None,
-        max_tokens: int | None = None,
-    ) -> LLMResult:
-        self.budget.ensure_can_call()
-        self.calls.append({"system": system, "user": user})
-        text = self.responses.pop(0) if self.responses else "{}"
-        result = LLMResult(text=text, model="scripted/test", prompt_tokens=10, completion_tokens=10, cost_usd=0.0)
-        self.budget.charge(result)
-        return result
-
-
 def parse_json_object(text: str) -> dict:
     """Tolerant JSON extraction: handles fenced blocks and leading prose."""
 
@@ -427,7 +370,5 @@ def parse_json_object(text: str) -> dict:
     return {}
 
 
-def build_gateway(settings: Settings, budget: LLMBudget, *, responses: list[str] | None = None) -> ModelGateway:
-    if settings.llm_mode == "litellm":
-        return LiteLLMGateway(settings, budget)
-    return ScriptedGateway(settings, budget, responses=responses) if responses is not None else MockGateway(settings, budget)
+def build_gateway(settings: Settings, budget: LLMBudget) -> ModelGateway:
+    return LiteLLMGateway(settings, budget)

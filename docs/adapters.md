@@ -53,26 +53,61 @@ POST /…
            "metadata":{…},"configuration":{"blocking":true}}}
 ```
 
-See `examples/mock_a2a_agents/app.py` for a 100-line reference peer.
+See `examples/agent_cards/` for reference card payloads.
 
-## Adding MCP
+## MCP adapter
 
-```python
-class MCPAdapter(AgentAdapter):
-    protocol = "mcp"
+MCP servers publish **tools**, not conversational agents. One registry card maps
+onto **one tool on one server**, and the call goes through the LiteLLM MCP
+gateway — the adapter never speaks MCP itself.
 
-    async def invoke(self, card, request):
-        # connect to card.endpoint (streamable HTTP), list/filter tools from the
-        # card's capability metadata, call the selected tool, normalize the result
-        ...
-
-    async def check_health(self, card): ...
-    async def discover(self, endpoint): ...  # optional: import tools as capabilities
+```
+POST {AO_LITELLM_PROXY_URL}/mcp-rest/tools/call
+{"server_id": "...", "name": "<tool>", "arguments": {...}}
 ```
 
-Register in `AdapterRegistry.default()`. Set `protocol: "mcp"` on the card.
-Policy, approvals and tracing work unchanged because they operate on the card and
-the normalized `InvocationResult`.
+| Concern | Behavior |
+|---|---|
+| Routing | **Gateway-only**: `{AO_LITELLM_PROXY_URL}{AO_MCP_TOOL_CALL_PATH}` |
+| Discovery | `GET /mcp-rest/tools/list?server_id=…` through the gateway |
+| Health | `healthy` if the tool is listed on the server, `degraded` if the server answers but lacks the tool, `unhealthy` if the server is unreachable |
+| Identity | `X-Alstom-*` propagation headers, plus `X-LiteLLM-Trace-Id` / `X-LiteLLM-Agent-Id` |
+| Auth | LiteLLM virtual key in `x-litellm-api-key`. Upstream MCP credentials live in the gateway (`auth_type`, OAuth, SigV4), never here |
+| Retries | Transport errors, timeouts and 429/5xx with backoff (`AO_MCP_MAX_RETRIES`) |
+| Response | Unwraps MCP `content[].text`, `structuredContent`, and LiteLLM `detail` error envelopes |
+| Errors | `missing_mcp_server` / `missing_mcp_tool` raise immediately; gateway failures become a failed `InvocationResult` with a readable reason |
+
+### Card metadata
+
+| Key | Fallback | Meaning |
+|---|---|---|
+| `mcp_server_id` | `AO_MCP_DEFAULT_SERVER_ID` | gateway server key or UUID |
+| `mcp_tool` | `AO_MCP_DEFAULT_TOOL` | upstream (unprefixed) tool name |
+| `mcp_argument` | `AO_MCP_ARGUMENT_NAME` (`query`) | parameter the request text is passed as |
+| `mcp_arguments` | `AO_MCP_DEFAULT_ARGUMENTS` | static JSON object merged under the query |
+| `mcp_query` | — | fixed argument value instead of the request text |
+
+`capabilities` stay the routing signal, so the planner needs no MCP-specific
+knowledge. `protocol: "mcp"` on the card is the only routing switch.
+
+### Why the gateway owns the MCP session
+
+LiteLLM negotiates the protocol version, holds upstream credentials, and handles
+streamable HTTP / SSE / stdio reconnects. Delegating that keeps one egress path
+for auth, logging, spend and rate limits — the same argument as for A2A.
+
+Two gateway quirks worth knowing:
+
+* tool names in a global list are **prefixed** (`server-tool`); per-server lists
+  return the unprefixed name. The adapter uses per-server listing and the
+  unprefixed name.
+* `arguments: null` is a 500. The adapter always sends an object, `{}` at worst.
+
+### Reference server
+
+`examples/reference_mcp/` is a three-tool FastMCP server used for local testing.
+It is not part of the platform. Note it must allow the container hostname as a
+`Host` header, or the SDK answers `421 Misdirected Request`.
 
 ## Adding REST
 

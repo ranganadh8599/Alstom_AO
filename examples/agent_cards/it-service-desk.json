@@ -4,7 +4,7 @@
   "description": "Resolves IT knowledge questions: account access, VPN, laptop provisioning and software requests. Provides instructions and can open a ticket.",
   "platform": "alstom-it",
   "protocol": "a2a",
-  "endpoint": "http://localhost:9101/agents/it",
+  "endpoint": "https://it-agents.internal.example/agents/it",
   "owner": "IT Service Management",
   "owner_contact": "servicedesk@example.com",
   "capabilities": [

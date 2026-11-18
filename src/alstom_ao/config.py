@@ -24,7 +24,6 @@ class Settings(BaseSettings):
     port: int = 8080
     cors_origins: str = "*"
     db_auto_create: bool = True
-    seed_demo_agents: bool = True
 
     # --- database --------------------------------------------------------
     database_url: str = "sqlite+aiosqlite:///./alstom_ao.db"
@@ -48,7 +47,6 @@ class Settings(BaseSettings):
     service_name: str = "agent-orchestrator"
 
     # --- LLM gateway -----------------------------------------------------
-    llm_mode: str = "litellm"  # mock | litellm
     llm_model: str = "openai/gpt-4o-mini"
     llm_api_base: str | None = None
     llm_api_key: str | None = None
@@ -104,10 +102,27 @@ class Settings(BaseSettings):
     litellm_a2a_protocol_version: str = "0.3"  # wire format the proxy serves us
     litellm_forward_trace_headers: bool = True
 
+    # --- MCP routing -------------------------------------------------------
+    # MCP servers publish *tools*, not conversational agents. One card is one
+    # tool on one server, and the gateway is the only egress point:
+    #   POST {AO_LITELLM_PROXY_URL}{AO_MCP_TOOL_CALL_PATH}
+    # The adapter never speaks MCP itself; LiteLLM owns the MCP session,
+    # upstream credentials and transport negotiation.
+    mcp_timeout_seconds: float = 30.0
+    mcp_max_retries: int = 2
+    mcp_tools_list_path: str = "/mcp-rest/tools/list"
+    mcp_tool_call_path: str = "/mcp-rest/tools/call"
+    mcp_server_list_path: str = "/v1/mcp/server"
+    mcp_default_server_id: str | None = None
+    mcp_default_tool: str | None = None
+    mcp_default_arguments: str = ""  # JSON object string; static args merged under the query
+    mcp_argument_name: str = "query"  # tool parameter the query is passed as
+
     # --- policy ----------------------------------------------------------
     policy_mode: str = "observe"  # observe | enforce
     opa_url: str | None = "http://localhost:8181"
     opa_decision_path: str = "alstom/authz/decision"
+    opa_approval_decision_path: str = "alstom/approval/decision"
     opa_timeout_seconds: float = 2.0
     policy_local_fallback: bool = True
 
@@ -137,14 +152,6 @@ class Settings(BaseSettings):
         value = value.lower().strip()
         if value not in {"observe", "enforce"}:
             raise ValueError("policy_mode must be 'observe' or 'enforce'")
-        return value
-
-    @field_validator("llm_mode")
-    @classmethod
-    def _validate_llm_mode(cls, value: str) -> str:
-        value = value.lower().strip()
-        if value not in {"mock", "litellm"}:
-            raise ValueError("llm_mode must be 'mock' or 'litellm'")
         return value
 
     @model_validator(mode="after")

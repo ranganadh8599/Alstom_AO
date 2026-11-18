@@ -64,7 +64,7 @@ always in Postgres, so the queue is not lost either way.
 |---|---|
 | `AO_APPROVAL_TTL_MINUTES` | `120` |
 | `AO_APPROVAL_RISK_THRESHOLD` | `high` |
-| `AO_APPROVAL_ADMIN_ROLES` | `platform-admin,approver` |
+| `AO_APPROVAL_ADMIN_ROLES` | `admin` |
 | `AO_APPROVAL_ADMIN_BYPASS` | `false` |
 | `AO_APPROVAL_ALLOW_SELF` | `false` |
 

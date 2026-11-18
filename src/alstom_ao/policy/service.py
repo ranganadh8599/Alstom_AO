@@ -126,8 +126,11 @@ def local_decision(
         if not set(agent.permissions.required_scopes).issubset(set(identity.service.scopes)) and not is_admin:
             reasons.append("service_scope_missing")
 
+    # Mirrors `tenant_ok` in agent_authz.rego: an agent scoped to a tenant is
+    # denied unless the caller's tenant matches exactly. A caller with no tenant
+    # must NOT inherit access — that would fail open on the security-relevant field.
     tenant = agent.metadata.get("tenant_id") if isinstance(agent.metadata, dict) else None
-    if tenant and identity.user.tenant_id and tenant != identity.user.tenant_id and not is_admin:
+    if tenant and tenant != identity.user.tenant_id and not is_admin:
         reasons.append("tenant_mismatch")
 
     if agent.permissions.data_classification == "restricted":
@@ -256,7 +259,7 @@ class PolicyService:
             "risk_level": str(risk_level),
             "action": str(action),
         }
-        result = await self.opa.decide("alstom/approval/decision", payload)
+        result = await self.opa.decide(self.settings.opa_approval_decision_path, payload)
         if isinstance(result, dict) and "allow" in result:
             return PolicyDecision(
                 allowed=bool(result.get("allow")),

@@ -14,7 +14,7 @@ Deployed topology (verified running):
 | LiteLLM gateway | 4000 | LLM routing + A2A agent gateway |
 | OPA | 8181 | policy decisions |
 | Postgres | 5432 | registry, runs, trace ledger, approvals, Langfuse checkpoints |
-| Mock A2A agents | 9101 | reference A2A peers (finance / HR / IT) |
+| A2A agents | your choice | the agents you register |
 | Langfuse | cloud | span-level tracing |
 
 ---
@@ -50,7 +50,7 @@ flowchart TB
 
     subgraph llm["Model & agent plane"]
         LG["LiteLLM gateway :4000<br/>model routing, spend logs"]
-        AG["A2A agents :9101<br/>finance · HR · IT"]
+        AG["A2A agents<br/>your registered agents"]
     end
 
     subgraph obs["Observability"]
@@ -93,7 +93,7 @@ flowchart TB
 | **Agent registry** | Source of truth for *who* an agent is and *what it may do*: identity, capabilities, schemas, permissions, version, risk, environment, health. Also produces the role-filtered planner catalog. **`endpoint` and `auth` are catalogue metadata** for generating gateway config ? the service never dials `endpoint` and never sends `auth` credentials. | `registry/service.py`, `db/repositories.py` |
 | **Policy client** | Per-agent authorization before any call. Calls OPA; falls back to a local Python mirror of the same rules when OPA is unreachable. Records every decision. | `policy/service.py`, `policies/*.rego` |
 | **Approval service** | Computes whether a human must approve, from actions + card risk + policy obligations + deterministic intent inference. Persists the request; supports expiry and separation of duties. | `approvals/service.py` |
-| **LLM gateway** | Single path to models. Provider-agnostic via LiteLLM, with per-run budget, retries, fallbacks, and a deterministic mock for hermetic tests. | `llm/gateway.py` |
+| **LLM gateway** | Single path to models. Provider-agnostic via LiteLLM, with per-run budget, retries, fallbacks. | `llm/gateway.py` |
 | **A2A adapter** | Calls agents over JSON-RPC 2.0 **through the LiteLLM gateway only**. Handles discovery, gateway auth, retries, idempotent ids and trace propagation. There is no direct path to an agent. | `adapters/a2a.py` |
 | **Tracer** | One Langfuse trace per run with an `agent` span per invocation, plus an append-only `trace_events` ledger that survives Langfuse outages. | `observability/tracing.py` |
 | **Postgres** | Registry + operational ledger + paused-run checkpoints + approval queue. Single durable store; SQLite in dev. | `db/tables.py` |

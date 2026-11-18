@@ -355,9 +355,6 @@ class Planner:
     ) -> Plan:
         heuristic = heuristic_plan(query=query, catalog=catalog, settings=self.settings)
 
-        if gateway.is_mock:
-            return heuristic
-
         if not catalog:
             return Plan(
                 intent=query[:300],

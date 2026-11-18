@@ -3,12 +3,11 @@
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 #
 # Differences from the dev stack:
-#   * AO_ENVIRONMENT=prod        -> demo seeding refused, AO_DEBUG refused
-#   * demo seeding disabled      -> agents are registered explicitly (real cards)
+#   * AO_ENVIRONMENT=prod        -> AO_DEBUG refused
+#   * agents registered explicitly through POST /v1/agents (never seeded)
 #   * schema via Alembic         -> AO_DB_AUTO_CREATE=false, run `alembic upgrade head`
 #   * Postgres checkpointer      -> approval pauses survive a restart
 #   * policy enforced by OPA     -> no silent local fallback
-#   * live LLM via the gateway   -> AO_LLM_MODE=litellm
 services:
   litellm:
     environment:
@@ -23,17 +22,15 @@ services:
     environment:
       AO_ENVIRONMENT: prod
       AO_DEBUG: "false"
-      AO_SEED_DEMO_AGENTS: "false"
       AO_DB_AUTO_CREATE: "false"
       AO_DATABASE_URL: postgresql+asyncpg://alstom:alstom@postgres:5432/alstom_ao
-      AO_LLM_MODE: litellm
       AO_LLM_MODEL: gpt-4o-mini
       AO_LLM_API_BASE: http://litellm:4000
       AO_LLM_API_KEY: ${AO_LLM_API_KEY}
       AO_LLM_FALLBACK_MODELS: ""
       AO_POLICY_MODE: enforce
       AO_OPA_URL: http://opa:8181
-      AO_POLICY_LOCAL_FALLBACK: "true"
+      AO_POLICY_LOCAL_FALLBACK: "false"
       # Policy: no direct agent-to-agent calls; everything traverses the gateway.
       # Agents are reached only via the LiteLLM gateway (no direct mode).
       AO_SYNTHESIS_GROUNDING: ${AO_SYNTHESIS_GROUNDING:-warn}

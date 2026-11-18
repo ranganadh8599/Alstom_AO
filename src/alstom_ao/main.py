@@ -21,29 +21,22 @@ from alstom_ao.errors import AppError
 from alstom_ao.logging_conf import configure_logging
 from alstom_ao.orchestrator.graph import build_graph, checkpointer_for
 from alstom_ao.orchestrator.service import RunService
-from alstom_ao.registry.service import seed_demo_agents
 
 logger = logging.getLogger(__name__)
 
 
 async def initialize_app(app: FastAPI) -> None:
-    """Create tables, seed demo cards, open the checkpointer and compile the graph.
+    """Create tables, open the checkpointer and compile the graph.
 
     Exposed separately from the lifespan so integration tests can initialise the
     app without an ASGI lifespan manager.
+
+    Agents are never seeded here: the registry is populated through
+    ``POST /v1/agents``. See docs/handover.md.
     """
 
     container = app.state.container
     settings: Settings = container.settings
-
-    # Production guard: demo cards point at localhost:9101 and would let the
-    # planner route real traffic to a non-existent service. Refuse to start
-    # rather than silently register fake agents.
-    if settings.is_production and settings.seed_demo_agents:
-        raise RuntimeError(
-            "Refusing to start: AO_SEED_DEMO_AGENTS is enabled in a production environment. "
-            "Demo agent cards point at local development endpoints. Set AO_SEED_DEMO_AGENTS=false."
-        )
 
     if settings.db_auto_create:
         if settings.is_production:
@@ -52,17 +45,13 @@ async def initialize_app(app: FastAPI) -> None:
                 "changes are versioned and reversible."
             )
         await container.database.create_all()
-    if settings.seed_demo_agents:
-        created = await seed_demo_agents(container.registry, settings)
-        if created:
-            logger.info("Seeded %s demo agent card(s).", created)
 
     checkpointer_cm = checkpointer_for(settings)
     checkpointer = await checkpointer_cm.__aenter__()
     app.state.checkpointer_cm = checkpointer_cm
     app.state.graph = build_graph(container.services, checkpointer)
     container.run_service = RunService(container.services, app.state.graph)
-    logger.info("Alstom AO ready (env=%s, llm_mode=%s, policy_mode=%s).", settings.environment, settings.llm_mode, settings.policy_mode)
+    logger.info("Alstom AO ready (env=%s, policy_mode=%s).", settings.environment, settings.policy_mode)
 
 
 async def shutdown_app(app: FastAPI) -> None:

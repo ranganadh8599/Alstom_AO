@@ -35,11 +35,14 @@ Response:
 | Action ∈ `allowed_actions` (empty = read-only) | `action_not_permitted` |
 | Service holds `required_scopes` | `service_scope_missing` |
 | Tenant matches `metadata.tenant_id` | `tenant_mismatch` |
-| `restricted` needs `data-steward` | `restricted_data_role_missing` |
+| `restricted` needs `admin` | `restricted_data_role_missing` |
 
-`platform-admin` bypasses environment/role/action/scope checks (status is always
+`admin` bypasses environment/role/action/scope/tenant checks (status is always
 required). `requires_approval` is emitted for high-risk + high-impact actions and
 for `requires_approval_for` actions.
+
+A tenant-scoped agent is denied unless the caller's tenant matches **exactly**.
+A caller with no tenant does not inherit access.
 
 ## Modes
 
@@ -57,12 +60,21 @@ production posture. Start in `observe` to build confidence, then flip.
 OPA-outage operation. If you add a Rego rule, mirror it there (or set
 `AO_POLICY_LOCAL_FALLBACK=false` and accept fail-closed behavior).
 
+The fallback must fail closed wherever the Rego does. In particular, a missing
+caller tenant never grants access to a tenant-scoped agent.
+
+The two implementations are not automatically checked against each other — if you
+change a rule, update `local_decision()` in the same change.
+
 ## Approval authorization (`policies/approval.rego`)
 
 Who may decide an approval:
 
-- must hold `approver` / `platform-admin` / `compliance-officer`;
+- must hold `admin`;
 - must not be the requester (separation of duties).
+
+The decision point defaults to `alstom/approval/decision` and is configurable
+via `AO_OPA_APPROVAL_DECISION_PATH`.
 
 ## Running OPA
 
@@ -70,7 +82,13 @@ Who may decide an approval:
 opa run --server --addr=0.0.0.0:8181 ./policies
 ```
 
-Docker Compose mounts `./policies` read-only. Test a rule quickly:
+Docker Compose mounts `./policies` read-only. Validate before serving:
+
+```bash
+opa check ./policies
+```
+
+Test a rule quickly:
 
 ```bash
 curl -s localhost:8181/v1/data/alstom/authz/decision \

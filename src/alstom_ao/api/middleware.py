@@ -10,13 +10,17 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
+from alstom_ao.observability.tracing import normalize_trace_id
+
 logger = logging.getLogger("alstom_ao.access")
 
 
 class RequestContextMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next) -> Response:
         request_id = request.headers.get("x-request-id") or f"req_{uuid.uuid4().hex[:16]}"
-        trace_id = request.headers.get("x-trace-id")
+        # Normalised so the id echoed back, stored on the run and sent to Langfuse
+        # are the same value the caller used to correlate the request.
+        trace_id = normalize_trace_id(request.headers.get("x-trace-id"))
         request.state.request_id = request_id
         request.state.trace_id = trace_id
         started = time.perf_counter()

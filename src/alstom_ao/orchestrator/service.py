@@ -38,7 +38,7 @@ from alstom_ao.errors import (
 )
 from alstom_ao.llm.gateway import BudgetState, LLMBudget, build_gateway
 from alstom_ao.observability.metrics import metrics
-from alstom_ao.observability.tracing import new_trace_id
+from alstom_ao.observability.tracing import new_trace_id, normalize_trace_id
 from alstom_ao.orchestrator.runtime import NodeServices, RunRuntime
 
 logger = logging.getLogger(__name__)
@@ -196,7 +196,9 @@ class RunService:
 
         run_id = f"run_{uuid.uuid4().hex[:24]}"
         workflow_id = workflow_id or f"wf_{uuid.uuid4().hex[:24]}"
-        trace = trace_id if trace_id and len(trace_id) == 32 else new_trace_id()
+        # Adopt the caller's correlation id so the UI's trace and this service's
+        # spans land in ONE Langfuse trace instead of two.
+        trace = normalize_trace_id(trace_id) or new_trace_id()
         environment = environment or settings.environment
 
         record = RunRecord(
@@ -393,6 +395,33 @@ class RunService:
         failure_message: str | None = None
         failure_status: RunStatus | None = None
 
+        # One root observation per run, so every node and agent span nests beneath
+        # it instead of appearing as an orphan root in the trace. Without this the
+        # trace is a flat list and the causal chain is unreadable.
+        async with runtime.tracer.span("orchestrator.run", input={"resumed": resume}):
+            return await self._execute(
+                run_id=run_id,
+                runtime=runtime,
+                payload=payload,
+                config=config,
+                started=started,
+                resume=resume,
+                failure_status=failure_status,
+                failure_message=failure_message,
+            )
+
+    async def _execute(
+        self,
+        *,
+        run_id: str,
+        runtime: RunRuntime,
+        payload: Any,
+        config: dict[str, Any],
+        started: float,
+        resume: bool,
+        failure_status: RunStatus | None,
+        failure_message: str | None,
+    ) -> RunResult:
         try:
             await asyncio.wait_for(
                 self.graph.ainvoke(payload, config),

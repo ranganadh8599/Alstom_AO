@@ -26,6 +26,7 @@ from alstom_ao.domain.models import (
     TraceEvent,
 )
 from alstom_ao.errors import ConflictError, NotFoundError
+from alstom_ao.security.redaction import redact_secrets, redact_value
 
 # ---------------------------------------------------------------------------
 # mappers
@@ -319,16 +320,19 @@ class RunRepository:
                 workflow_id=run.workflow_id,
                 trace_id=run.trace_id,
                 status=str(run.status),
-                query=run.query,
+                # Stored copies are scrubbed: these columns are returned by
+                # /v1/runs*, and a pasted credential must not become readable there.
+                query=redact_secrets(run.query),
                 environment=run.environment,
                 use_case=run.use_case,
                 user_id=run.identity.user.user_id,
                 tenant_id=run.identity.user.tenant_id,
                 identity=run.identity.model_dump(mode="json"),
-                plan=run.plan.model_dump(mode="json") if run.plan else {},
+                # plan.intent carries the query, so it is scrubbed too.
+                plan=redact_value(run.plan.model_dump(mode="json")) if run.plan else {},
                 selected_agents=run.selected_agents,
-                response=run.response,
-                error=run.error,
+                response=redact_secrets(run.response),
+                error=redact_secrets(run.error),
                 approval_id=run.approval_id,
                 usage=run.usage,
                 langfuse_url=run.langfuse_url,
@@ -381,13 +385,13 @@ class RunRepository:
         if status is not None:
             values["status"] = str(status)
         if plan is not None:
-            values["plan"] = plan.model_dump(mode="json")
+            values["plan"] = redact_value(plan.model_dump(mode="json"))
         if selected_agents is not None:
             values["selected_agents"] = selected_agents
         if response is not None:
-            values["response"] = response
+            values["response"] = redact_secrets(response)
         if error is not None:
-            values["error"] = error
+            values["error"] = redact_secrets(error)
         if approval_id is not None:
             values["approval_id"] = approval_id
         if usage is not None:

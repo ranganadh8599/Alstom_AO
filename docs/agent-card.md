@@ -91,7 +91,7 @@ secret itself belongs in the gateway's environment, not here.
   "description": "Audits vendor invoices, detects duplicates and checks purchase orders.",
   "platform": "alstom-finance",
   "protocol": "a2a",
-  "endpoint": "http://localhost:9101/agents/finance",
+  "endpoint": "https://finance-agents.internal.example/agents/finance",
   "owner": "Finance Operations",
   "capabilities": ["invoice audit", "duplicate invoice detection", "vendor payment status"],
   "input_schema": {"type": "object", "properties": {"message": {"type": "string"}}},

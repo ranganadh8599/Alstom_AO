@@ -1,488 +1,513 @@
-# Alstom AO — enterprise multi-agent orchestration layer
+# Alstom AO — Agent Orchestration Layer
 
-A production-oriented orchestration layer that sits between a UI and many
-enterprise agents. It is exposed to the UI **as a virtual LLM model**
-(`/v1/chat/completions`), routes each request to the right agents over **A2A**,
-enforces **OPA** policy, pauses for **human approval when the intent is
-consequential**, and traces every hop to **Langfuse** with dual identity.
+An orchestration layer that sits between a chat UI and your enterprise agents.
+The UI calls it **as if it were a single LLM** (`/v1/chat/completions`); it decides
+which agents to run, enforces policy, pauses for human approval when an action is
+consequential, and records a trace of everything that happened.
 
-> **Design stance:** the orchestration layer is infrastructure, not a prompt.
-> Who may run, on whose behalf, with which version, at what cost, and how to prove
-> it afterwards — those are the product.
+> **No agent is called unless it is registered, active, in the right environment,
+> allowed by policy, and — when required — approved by a human.**
 
 ---
 
 ## Contents
 
-- [What it does](#what-it-does)
-- [Architecture](#architecture)
-- [Quickstart](#quickstart)
-- [The agent registry](#the-agent-registry)
-- [Dynamic routing](#dynamic-routing)
-- [Human approval](#human-approval)
-- [Policy (OPA)](#policy-opa)
-- [Tracing and observability](#tracing-and-observability)
-- [Dual identity](#dual-identity)
-- [API](#api)
-- [Configuration](#configuration)
-- [Extending the platform](#extending-the-platform)
-- [Production notes](#production-notes)
-- [Tests](#tests)
-- [Design lineage](#design-lineage)
+1. [Prerequisites](#1-prerequisites)
+2. [Quickstart (5 minutes, no Docker)](#2-quickstart-5-minutes-no-docker)
+3. [Full stack with Docker](#3-full-stack-with-docker)
+4. [Register your first agent](#4-register-your-first-agent)
+5. [Run a request](#5-run-a-request)
+6. [Approvals](#6-approvals)
+7. [Configuration](#7-configuration)
+8. [Project layout](#8-project-layout)
+9. [Verify the install](#9-verify-the-install)
+10. [Troubleshooting](#10-troubleshooting)
 
 ---
 
-## What it does
+## 1. Prerequisites
 
-| Capability | Implementation |
-|---|---|
-| Central agent registry | Postgres `agent_cards`, mandatory identity/capability card |
-| Dynamic routing | LLM planner (LiteLLM) **plus** deterministic heuristic fallback and hybrid merge |
-| A2A protocol | JSON-RPC 2.0 `message/send` with legacy `tasks/send` fallback, agent-card discovery |
-| LiteLLM agent gateway | **Mandatory** A2A routing through `POST /a2a/{agent}` ? no direct agent-to-agent calls in production; trace-header and protocol-version propagation |
-| Robust "no agent" handling | Explicit `no_match`, `invalid`, `denied` terminal states with user-facing messages |
-| Policy | OPA (`policies/*.rego`) with local fallback, `observe` / `enforce` modes |
-| Human-in-the-loop | Dynamic risk assessment + LangGraph `interrupt`; survives restart with a Postgres checkpointer |
-| Observability | One Langfuse trace per run, one span per node/agent, plus a durable `trace_events` ledger |
-| Dual identity | User headers + service identity preserved into every agent call and trace event |
-| Access control | Runs/approvals are owner-scoped; approvers are tenant-scoped; platform admins global |
-| Idempotent submissions | `Idempotency-Key` header: a retried POST returns the first run, never re-executes |
-| Tiered budgets | soft alert at 80% → model downgrade → hard gate that still returns collected agent results; details in [docs/budgets.md](docs/budgets.md) |
-| Numeric grounding | every figure in the synthesized answer must appear in an agent result or the question; `off`/`warn`/`strict` |
-| Content guardrails | prompt-injection and secret-request blocked; PII/profanity reported or masked; `off`/`warn`/`block` |
-| Output contracts | agent results validated against the card's `output_schema`; `off`/`warn`/`enforce` |
-| Evaluation | golden routing set: `python -m evals.run_golden` (offline) or `--base-url` (live) |
-| Loop protection | per-run agent-hop cap and inbound A2A depth cap, independent of spend |
-| Trace retention | `scripts/prune_trace_events.py` with dry-run, batching and stats |
-| Virtual model | OpenAI-compatible `/v1/chat/completions` (streaming and non-streaming) |
-| Modular adapters | `AgentAdapter` ABC; A2A today, MCP/REST later without touching the orchestrator |
+| Requirement | Version | Needed for |
+|---|---|---|
+| Python | 3.11+ | everything |
+| Git | any | cloning |
+| Docker + Compose | any recent | the full stack (Postgres, OPA, LiteLLM) |
 
----
+Check what you have:
 
-## Architecture
-
-```mermaid
-flowchart LR
-    UI["UI / chatbot<br/>X-User-* headers"] -->|"OpenAI chat<br/>/v1/chat/completions"| API["Alstom AO API"]
-    API --> GRAPH["LangGraph orchestration"]
-
-    subgraph GRAPH
-        V["validate"] --> P["plan<br/>LLM + heuristic"]
-        P --> A["authorize<br/>OPA"]
-        A --> G{"approval<br/>needed?"}
-        G -->|yes| H["interrupt<br/>human decision"]
-        G -->|no| E["execute<br/>fan-out"]
-        H -->|approved| E
-        E --> S["synthesize"] --> F["finalize"]
-    end
-
-    P -.catalog.-> REG[("agent_cards<br/>Postgres")]
-    A -.input.-> OPA["OPA / Rego"]
-    P -.planning.-> LG["LiteLLM gateway<br/>(LLM: plan + synth)"]
-    S -.synthesis.-> LG
-
-    E --> AD["A2A adapter<br/>JSON-RPC 2.0"]
-    AD --> GW["LiteLLM agent gateway<br/>/a2a/{agent}"]
-    GW --> AGENTS
-
-    subgraph AGENTS["Registered A2A agents"]
-        A1["Finance"]
-        A2["HR"]
-        A3["IT"]
-    end
-
-    GRAPH -.spans.-> LF["Langfuse"]
-    GRAPH -."append-only ledger".-> TR[("runs / trace_events /<br/>approvals / policy_decisions")]
+```bash
+python --version
+docker --version
 ```
 
-**Guarantees**
-
-1. No agent is called unless it is registered, active, in the right environment,
-   allowed by policy, and (when required) approved by a human.
-2. The card version planned is the card version executed — snapshots are pinned
-   into graph state before any approval pause.
-3. Every terminal path produces a user-safe answer and an auditable trace.
-4. A failing agent never fails the whole run silently; partial answers are
-   labelled and failures are recorded.
+You do **not** need Postgres, OPA, or a model API key to start the app — SQLite is
+the default and the agent gateway is only contacted when a run executes.
 
 ---
 
-## Quickstart
+## 2. Quickstart (5 minutes, no Docker)
 
-### Docker (Postgres + OPA + mock agents + API)
+From a fresh clone on a new laptop:
+
+```bash
+# 1. Enter the project
+cd Alstom_AO
+
+# 2. Create an isolated environment
+python -m venv .venv
+
+# Windows
+.venv\Scripts\activate
+# macOS / Linux
+source .venv/bin/activate
+
+# 3. Install the package and its dependencies
+pip install -e ".[dev]"
+
+# 4. Create your local configuration
+#    Windows
+copy .env.example .env
+#    macOS / Linux
+cp .env.example .env
+
+# 5. Prove it runs
+python scripts/smoke_check.py
+
+# 6. Start the API
+python -m alstom_ao
+```
+
+Open <http://localhost:8080/docs> for the interactive API reference.
+
+`smoke_check.py` prints one line per endpoint. **All five must say `ok`.** If they
+do, the app, its schema and its routers are working.
+
+> Stop the server with `Ctrl+C`.
+
+---
+
+## 3. Full stack with Docker
+
+This starts Postgres, OPA (policy), LiteLLM (agent gateway) and the API together.
 
 ```bash
 docker compose up --build
 ```
 
-Then open <http://localhost:8080/docs>.
+| Service | URL | Purpose |
+|---|---|---|
+| `api` | <http://localhost:8080> | this application |
+| `api` docs | <http://localhost:8080/docs> | interactive API reference |
+| `opa` | <http://localhost:8181> | policy decisions |
+| `litellm` | <http://localhost:4000> | agent gateway + model routing |
+| `postgres` | `localhost:5432` | database (`alstom` / `alstom`) |
+| `reference-agent` | <http://localhost:9101> | one test A2A agent (not part of the platform) |
+| `mcp-reference` | <http://localhost:9102> | one test MCP server, 3 tools (not part of the platform) |
 
-### Local, no API key, no Postgres
-
-```bash
-python -m venv .venv && source .venv/bin/activate     # Windows: .venv\Scripts\activate
-pip install -e ".[dev]"
-cp .env.example .env                                  # defaults: SQLite + mock LLM
-python scripts/run_demo.py
-```
-
-`run_demo.py` starts three mock A2A agents and the API, asks a read-only finance
-question, asks a write question (which pauses for approval), approves it, and
-prints the audit timeline.
-
-### First calls by hand
+Check everything is healthy:
 
 ```bash
-# read-only: routes to the finance agent, no approval
-curl -s localhost:8080/v1/orchestrate \
-  -H 'Content-Type: application/json' \
-  -H 'X-User-Id: alice' -H 'X-User-Roles: user,finance' \
-  -d '{"query":"Check invoice INV-2024-0912 for duplicate charges"}'
-
-# write intent: returns status=awaiting_approval + approval_id
-curl -s localhost:8080/v1/orchestrate \
-  -H 'Content-Type: application/json' \
-  -H 'X-User-Id: alice' -H 'X-User-Roles: user,finance' \
-  -d '{"query":"Create an adjustment task for invoice INV-2024-0912"}'
-
-# an approver decides; the paused graph resumes and executes
-curl -s localhost:8080/v1/approvals/<approval_id>/decision \
-  -H 'Content-Type: application/json' \
-  -H 'X-User-Id: bob' -H 'X-User-Roles: approver' \
-  -d '{"approved":true,"note":"checked with vendor"}'
+curl -s localhost:8080/healthz
+curl -s localhost:8080/readyz
 ```
 
-Using it as a model from any OpenAI client:
+Stop and remove everything, including data:
 
-```python
-from openai import OpenAI
+```bash
+docker compose down -v
+```
 
-client = OpenAI(base_url="http://localhost:8080/v1", api_key="unused")
-answer = client.chat.completions.create(
-    model="alstom-ao",
-    messages=[{"role": "user", "content": "How many days of annual leave do I get?"}],
-    extra_headers={"X-User-Id": "alice", "X-User-Roles": "user"},
-)
-print(answer.choices[0].message.content)
+### Production-shaped run
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+```
+
+The prod overlay switches to Postgres, applies schema through Alembic instead of
+auto-create, and enforces OPA policy without a silent local fallback. Run the
+migration first:
+
+```bash
+alembic upgrade head
 ```
 
 ---
 
-## The agent registry
+## 4. Register your first agent
 
-An agent cannot be integrated without a complete identity card. The registry is
-the single source of truth for *who* an agent is and *what it may do*.
+An agent must be registered before it can ever be called. Registration is
+**admin-only**.
 
-| Field | Purpose |
-|---|---|
-| `agent_id` | Stable identity (immutable, used in every trace) |
-| `name`, `description` | Human + planner context |
-| `platform`, `protocol`, `endpoint` | Where and how to call it (`a2a` today) |
-| `owner`, `owner_contact` | Accountability |
-| `capabilities`, `tags`, `examples` | Routing signal (planner + heuristic) |
-| `input_schema`, `output_schema` | Contract |
-| `auth` | `none`/`bearer`/`api_key`/`oauth2`, **secret reference only** (`env:NAME`) |
-| `permissions` | Allowed roles, actions, scopes, data classification, approval triggers |
-| `version` | Pinned into approvals and traces |
-| `status`, `environment` | Lifecycle and environment gating |
-| `risk_level` | Drives dynamic approval |
-| `health` | Discovery probe result |
+> **Every request needs identity headers.** The UI supplies them in production; when
+> calling by hand, add them yourself: `X-User-Id` is required, `X-User-Roles`
+> defaults to `user`.
+
+### Try it first with the bundled reference agent
+
+`docker compose up` starts one reference A2A agent on port 9101 (service
+`reference-agent`). It is **not** part of the platform — it exists so a fresh
+checkout has something to test against. Register it:
 
 ```bash
 curl -X POST localhost:8080/v1/agents \
   -H 'Content-Type: application/json' \
-  -H 'X-User-Id: admin' -H 'X-User-Roles: platform-admin' \
+  -H 'X-User-Id: admin' \
+  -H 'X-User-Roles: admin' \
+  -d @examples/reference_agent/card.json
+```
+
+It is `risk_level: high` and allows `write`, so it exercises the full path
+without registering anything else: routing, OPA policy, the approval pause, and
+execution. Try it with the queries in [section 5](#5-run-a-request).
+
+To remove it once real agents are registered:
+
+```bash
+curl -X DELETE localhost:8080/v1/agents/finance-invoice-auditor \
+  -H 'X-User-Id: admin' -H 'X-User-Roles: admin'
+docker compose stop reference-agent
+```
+
+> The card's `environment` (`dev`) must match `AO_ENVIRONMENT`, or the planner will
+> not see it. The dev compose stack sets `AO_ENVIRONMENT=dev`.
+
+### Or try the bundled MCP server
+
+The stack also runs a small **MCP** server on port 9102 (service `mcp-reference`)
+with three read-only tools. MCP servers publish *tools*, not agents, so one card
+maps onto one tool:
+
+```bash
+curl -X POST localhost:8080/v1/agents \
+  -H 'Content-Type: application/json' \
+  -H 'X-User-Id: admin' \
+  -H 'X-User-Roles: admin' \
+  -d @examples/reference_mcp/card.json
+```
+
+Then ask *"What is the status of invoice INV-2024-0912?"* — the planner can route
+to the A2A agent and the MCP tool in the same run.
+
+The card binds it with metadata:
+
+```json
+"protocol": "mcp",
+"metadata": {
+  "mcp_server_id": "alstom_reference",
+  "mcp_tool": "invoice_status",
+  "mcp_argument": "invoice_id"
+}
+```
+
+LiteLLM is the MCP gateway: it owns the MCP session and the upstream credentials,
+and the orchestrator calls it over REST (`/mcp-rest/tools/call`). It never speaks
+MCP itself. Details: [docs/adapters.md](docs/adapters.md).
+
+### Add your own MCP server
+
+Four steps, in this order — each one isolates a layer, so a failure tells you
+where the problem is:
+
+```bash
+# 1. register the server with the gateway (litellm/config.yaml -> mcp_servers:)
+#    and put its key in .env, never in a card
+docker compose up -d --force-recreate litellm
+
+# 2. find the exact tool name and its parameter
+LITELLM_MASTER_KEY=sk-alstom-master python scripts/mcp_discover.py --server my_server
+
+# 3. register the card (copy examples/agent_cards/sinequa-search.json)
+curl -X POST localhost:8080/v1/agents \
+  -H 'Content-Type: application/json' \
+  -H 'X-User-Id: admin' -H 'X-User-Roles: admin' \
+  -d @examples/agent_cards/sinequa-search.json
+
+# 4. prove each hop
+curl -X POST localhost:8080/v1/agents/<agent_id>/health \
+  -H 'X-User-Id: admin' -H 'X-User-Roles: admin'
+```
+
+Full walkthrough including every failure mode: **[docs/mcp-setup.md](docs/mcp-setup.md)**.
+
+> MCP endpoints need the gateway **master key**: access grants are DB-backed and
+> this stack runs `STORE_MODEL_IN_DB=False`, so a virtual key answers
+> `400 No connected db.` The AO service already uses the master key.
+
+### Register a real agent — card you wrote
+
+```bash
+curl -X POST localhost:8080/v1/agents \
+  -H 'Content-Type: application/json' \
+  -H 'X-User-Id: admin' \
+  -H 'X-User-Roles: admin' \
   -d @examples/agent_cards/finance-invoice-auditor.json
 ```
 
-Register an existing A2A agent from its card:
+The files in [`examples/agent_cards/`](examples/agent_cards) are **templates** —
+edit the `endpoint`, `name` and `capabilities` to match your real agent.
+
+### Register a real agent — import an existing A2A agent
+
+If your agent already publishes an A2A card, let AO fetch it:
 
 ```bash
 curl -X POST localhost:8080/v1/agents/discover \
   -H 'Content-Type: application/json' \
-  -H 'X-User-Id: admin' -H 'X-User-Roles: platform-admin' \
-  -d '{"endpoint":"http://localhost:9101/agents/finance","environment":"dev"}'
+  -H 'X-User-Id: admin' \
+  -H 'X-User-Roles: admin' \
+  -d '{"endpoint":"https://your-agent.example/agents/finance","environment":"dev"}'
 ```
 
-Details: [docs/agent-card.md](docs/agent-card.md).
+### Minimum required fields
 
----
-
-## Dynamic routing
-
-1. **LLM planner** (through LiteLLM) receives the user request, the caller's roles,
-   and a *closed catalog* of registered agents. It must return JSON and can only
-   reference catalog ids.
-2. **Validation** drops unknown agents, disallowed actions and duplicates.
-3. **Heuristic planner** scores capability/tag/example overlap. It is used when
-   the model is unavailable, returns invalid JSON, or is low-confidence; strong
-   heuristic matches are merged with model picks (hybrid). A destructive intent is
-   never silently downgraded to a read.
-4. **No match is a first-class outcome**: `status=no_match` with a message listing
-   what the environment *can* do. Nothing is invented.
-
-Capabilities are also filtered by the caller's roles, so an agent the user could
-never call never appears in the prompt.
-
----
-
-## Human approval
-
-Approval is **computed per request**, from:
-
-- the action each agent will take (`read` vs `write`/`delete`/`payment`/`execute`);
-- the agent's `risk_level` and `requires_approval_for`;
-- policy obligations from OPA;
-- the planner's own `requires_human_approval` judgement;
-- explicit admin bypass (off by default).
-
-A read-only question to a high-risk finance agent therefore runs immediately,
-while "create an adjustment task" pauses. Destructive actions **always** pause,
-even if the model forgot.
-
-The graph pauses with LangGraph `interrupt()`, the run is persisted as
-`awaiting_approval`, and the approval row survives restarts. Approving resumes
-the graph from the exact paused state; rejecting ends the run without calling any
-agent. Separation of duties is enforced by `policies/approval.rego`
-(approver role, never self-approval).
-
-Details: [docs/approvals.md](docs/approvals.md).
-
----
-
-## Policy (OPA)
-
-Every selected agent is authorized before execution:
-
-```
-POST {OPA}/v1/data/alstom/authz/decision
-input = { user, service, agent, action, environment, request }
+```json
+{
+  "agent_id": "my-agent",
+  "name": "My Agent",
+  "description": "At least ten characters describing what this agent does.",
+  "endpoint": "https://your-agent.example/agents/my",
+  "capabilities": ["what this agent can do"]
+}
 ```
 
-`policies/agent_authz.rego` checks: active status, environment, roles, allowed
-actions, service scopes, tenant, data classification. It also emits the
-`requires_approval` obligation.
+Everything else has a default. The ones that change behaviour most:
 
-Modes:
+| Field | Default | Effect |
+|---|---|---|
+| `environment` | `dev` | must equal the request environment or the planner ignores the card |
+| `status` | `active` | `inactive` means never called |
+| `risk_level` | `low` | `high` + a high-impact action triggers human approval |
+| `permissions.allowed_roles` | `[]` | empty = any authenticated caller |
+| `permissions.allowed_actions` | `[]` | empty = **read-only** (write/delete denied) |
+| `permissions.requires_approval_for` | `[]` | actions that always pause for a human |
+| `metadata.tenant_id` | unset | when set, callers from another tenant are denied |
+| `metadata.mcp_server_id`, `mcp_tool` | unset | required when `protocol` is `mcp` |
 
-- `observe` — record the denial in the trace, continue (safe rollout).
-- `enforce` — deny the agent; if every agent is denied the run ends `denied` with
-  a clear message.
-- If OPA is unreachable: use the local equivalent (`AO_POLICY_LOCAL_FALLBACK=true`)
-  or fail closed in `enforce` mode.
+### Wire the gateway
 
-Details: [docs/policies.md](docs/policies.md).
+Registration alone does not make an agent callable — the LiteLLM gateway needs a
+matching entry. Generate it from the registry:
 
----
+```bash
+python scripts/export_litellm_agents.py \
+  --base-url http://localhost:8080 \
+  --user-id admin --roles admin \
+  --out litellm/agents.generated.yaml
+```
 
-## Tracing and observability
+If the gateway knows your agent by a different name, set
+`metadata.litellm_agent_name` on the card.
 
-One run = one Langfuse trace. Every node and every agent call is a span carrying
-the common trace context:
+### Manage agents
 
-| Field | Meaning |
+| Action | Command |
 |---|---|
-| `workflow_id`, `trace_id`, `run_id`, `span_id`, `parent_span_id` | Correlation |
-| `agent_id`, `agent_name`, `agent_version`, `protocol` | **Agent identity** |
-| `initiated_by`, `authenticated_service` | **User + service identity** |
-| `use_case`, `environment`, `action` | Intent and blast radius |
-| `status`, `latency_ms`, `retry_count`, `error` | Outcome |
-| `previous_agents`, `next_agents` | Chain of agents |
-| `input`, `output` | What was asked, what came back |
+| List | `curl -s localhost:8080/v1/agents -H 'X-User-Id: alice'` |
+| Read one | `curl -s localhost:8080/v1/agents/my-agent -H 'X-User-Id: alice'` |
+| Update | `curl -X PATCH localhost:8080/v1/agents/my-agent -H 'X-User-Id: admin' -H 'X-User-Roles: admin' -H 'Content-Type: application/json' -d '{"description":"Updated description here."}'` |
+| Deactivate | `curl -X DELETE localhost:8080/v1/agents/my-agent -H 'X-User-Id: admin' -H 'X-User-Roles: admin'` |
+| Health probe | `curl -X POST localhost:8080/v1/agents/my-agent/health -H 'X-User-Id: alice'` |
 
-The same context is sent to the downstream agent in the JSON-RPC `metadata`
-**and** in `X-Alstom-*` headers, so a compliant peer joins the same trace.
-
-Alongside Langfuse, the platform writes an append-only `trace_events` ledger in
-Postgres (`GET /v1/runs/{id}/trace`), so the audit trail exists even if Langfuse
-is down. `GET /v1/runs/{id}/timeline` returns the agent order.
-
-Details: [docs/trace-context.md](docs/trace-context.md).
+`DELETE` is a **soft delete**: the card becomes `inactive` and history is kept.
 
 ---
 
-## Dual identity
+## 5. Run a request
 
-| Identity | Source | Carried as |
-|---|---|---|
-| User | `X-User-Id`, `X-User-Email`, `X-User-Roles`, `X-User-Team`, `X-Tenant-Id` | run record, every trace event, A2A metadata |
-| Service | `X-Service-Id`, `X-Service-Name`, `X-Service-Scopes`, `Authorization` (fingerprint only) | run record, every trace event, A2A metadata |
-| Agent | registry card (never inferred) | trace context per invocation |
+```bash
+curl -X POST localhost:8080/v1/orchestrate \
+  -H 'Content-Type: application/json' \
+  -H 'X-User-Id: alice' \
+  -H 'X-User-Roles: user' \
+  -d '{"query":"Check invoice INV-2024-0912 for duplicate charges"}'
+```
 
-Tokens are never stored: only `sha256:<first16>` fingerprints. Agent credentials
-are resolved from env at call time (`env:NAME`) and never persisted in the card.
+Or use the OpenAI-compatible surface, so any chat UI can point at it:
+
+```bash
+curl -X POST localhost:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -H 'X-User-Id: alice' \
+  -d '{"model":"alstom-ao","messages":[{"role":"user","content":"How many days of annual leave?"}]}'
+```
+
+### Follow what happened
+
+```bash
+curl -s localhost:8080/v1/runs  -H 'X-User-Id: alice'                    # list your runs
+curl -s localhost:8080/v1/runs/<run_id> -H 'X-User-Id: alice'            # one run
+curl -s localhost:8080/v1/runs/<run_id>/trace -H 'X-User-Id: alice'      # every step
+curl -s localhost:8080/v1/runs/<run_id>/policy -H 'X-User-Id: alice'     # policy decisions
+curl -s localhost:8080/v1/runs/<run_id>/timeline -H 'X-User-Id: alice'   # ordered events
+```
+
+### Submit safely, once
+
+Send an `Idempotency-Key` header on submit. A retried request returns the original
+run instead of executing again:
+
+```bash
+-H 'Idempotency-Key: 8f2c1a4e-...'
+```
 
 ---
 
-## API
+## 6. Approvals
 
-| Method | Path | Purpose |
-|---|---|---|
-| POST | `/v1/orchestrate` | Native orchestration |
-| POST | `/v1/chat/completions` | OpenAI-compatible virtual model (SSE when `stream=true`) |
-| GET | `/v1/models` | `alstom-ao` model listing |
-| GET | `/v1/runs`, `/v1/runs/{id}` | Run listing / detail |
-| GET | `/v1/runs/{id}/trace` | Full trace ledger |
-| GET | `/v1/runs/{id}/timeline` | Agent order, latency, retries |
-| GET | `/v1/runs/{id}/policy` | Policy decisions |
-| POST/GET/PATCH/DELETE | `/v1/agents…` | Registry CRUD (writes: admin) |
-| POST | `/v1/agents/discover` | Import an A2A agent card |
-| GET | `/v1/agents/catalog` | Planner view |
-| GET | `/v1/approvals` | Pending approvals |
-| POST | `/v1/approvals/{id}/decision` | Approve/reject and resume |
-| POST | `/v1/policies/evaluate` | Policy dry run |
-| GET | `/v1/policies/status` | OPA reachability |
-| GET | `/healthz`, `/readyz`, `/metrics` | Ops |
+When a high-risk agent is asked to perform a high-impact action
+(`write`, `update`, `delete`, `send`, `execute`, `payment`), the run pauses as
+`awaiting_approval` and nothing is executed.
 
-Details: [docs/api.md](docs/api.md).
+```bash
+# See what is waiting
+curl -s localhost:8080/v1/approvals -H 'X-User-Id: approver' -H 'X-User-Roles: admin'
+
+# Decide
+curl -X POST localhost:8080/v1/approvals/<approval_id>/decision \
+  -H 'Content-Type: application/json' \
+  -H 'X-User-Id: approver' -H 'X-User-Roles: admin' \
+  -d '{"approved":true,"note":"Checked against PO-4471"}'
+```
+
+Two rules are enforced by policy:
+
+1. the approver must hold an approver-class role (`admin` by default);
+2. **nobody may approve their own request** (separation of duties).
 
 ---
 
-## Configuration
+## 7. Configuration
 
-All settings are `AO_*` environment variables; see [.env.example](.env.example).
-Highlights:
+All settings are environment variables prefixed `AO_`, read from `.env` or the
+process environment. Environment variables win over `.env`.
 
-| Variable | Default | Notes |
+### The ones you will actually change
+
+| Variable | Default | Meaning |
 |---|---|---|
+| `AO_ENVIRONMENT` | `dev` | `dev` / `test` / `prod`. Cards must match this to be planned |
 | `AO_DATABASE_URL` | `sqlite+aiosqlite:///./alstom_ao.db` | Postgres in production |
-| `AO_LLM_MODE` | `mock` | `mock` or `litellm` |
-| `AO_LLM_MODEL` | `openai/gpt-4o-mini` | Any LiteLLM model id |
-| `AO_LLM_MAX_COST_USD_PER_RUN` | `0.50` | Budget guard |
-| `AO_BUDGET_SOFT_THRESHOLD` | `0.8` | Warn + optional downgrade at this fraction |
-| `AO_BUDGET_DEGRADE_MODEL` | unset | Cheaper model after a soft crossing |
-| `AO_BUDGET_ALERT_WEBHOOK` | unset | Slack-compatible alert URL |
-| `AO_MAX_AGENT_HOPS` | `8` | Agent calls per run |
-| `AO_MAX_A2A_DEPTH` | `3` | Inbound delegation depth before fan-out is refused |
-| `AO_POLICY_MODE` | `observe` | `observe` or `enforce` |
-| `AO_LITELLM_PROXY_URL` | `http://localhost:4000` | LiteLLM agent gateway base URL |
-| `AO_LITELLM_PROXY_API_KEY` | unset | Virtual key; required in proxy mode |
-| `AO_LITELLM_A2A_PROTOCOL_VERSION` | `0.3` | Wire format the gateway serves (`0.3` or `1.0`) |
-| `AO_OPA_URL` | `http://localhost:8181` | Empty disables OPA |
-| `AO_APPROVAL_ALLOW_SELF` | `false` | Keep false in production |
-| `AO_LANGFUSE_ENABLED` | `false` | Set keys to enable |
-| `AO_REQUIRE_USER_IDENTITY` | `true` | 401 when `X-User-Id` is missing |
+| `AO_DB_AUTO_CREATE` | `true` | set `false` in production and run `alembic upgrade head` |
+| `AO_LITELLM_PROXY_URL` | `http://localhost:4000` | **required** — the only route to an agent |
+| `AO_LITELLM_PROXY_API_KEY` | unset | gateway credential |
+| `AO_LLM_MODEL` | `openai/gpt-4o-mini` | model used for planning and synthesis |
+| `AO_POLICY_MODE` | `observe` | `observe` records denials; `enforce` blocks them |
+| `AO_OPA_URL` | `http://localhost:8181` | policy engine |
+| `AO_A2A_TIMEOUT_SECONDS` | `30` | per-agent call timeout |
+| `AO_RUN_TIMEOUT_SECONDS` | `120` | whole-run timeout |
+| `AO_MAX_PARALLEL_AGENTS` | `4` | fan-out ceiling |
+| `AO_SYNTHESIS_GROUNDING` | `warn` | `off` / `warn` / `strict` numeric grounding |
+| `AO_GUARDRAILS_MODE` | `warn` | `off` / `warn` / `block` prompt-injection and secrets |
+
+### Production checklist
+
+1. `AO_ENVIRONMENT=prod` and `AO_DEBUG=false` (startup refuses debug in prod).
+2. `AO_DATABASE_URL=postgresql+asyncpg://…`, then `alembic upgrade head`.
+3. `AO_DB_AUTO_CREATE=false`.
+4. Install the Postgres extra so approval pauses survive a restart:
+   `pip install -e ".[postgres]"`.
+5. `AO_POLICY_MODE=enforce` with a reachable `AO_OPA_URL`.
+6. Set `AO_METRICS_TOKEN` before exposing `/metrics`.
+7. Terminate authentication at the edge and **strip inbound `X-User-*` headers**
+   from untrusted clients — the app trusts them.
+
+Full reference: [`docs/production.md`](docs/production.md).
 
 ---
 
-## Extending the platform
+## 8. Project layout
 
-### Route agents through the LiteLLM gateway
-
-```bash
-export AO_LITELLM_PROXY_URL=http://localhost:4000
-export AO_LITELLM_PROXY_API_KEY=sk-alstom-master
+```
+src/alstom_ao/
+  api/            HTTP surface: routers, dependencies, middleware
+  orchestrator/   LangGraph flow: validate -> plan -> authorize -> approval -> execute -> synthesize
+  registry/       the agent catalogue (cards)
+  policy/         OPA client, local fallback, decision model
+  approvals/      human-in-the-loop requests and decisions
+  adapters/       A2A and MCP transports to the gateway
+  llm/            model gateway, budgets, grounding, guardrails
+  db/             SQLAlchemy models, repositories, sessions
+  security/       identity extraction and access control
+  observability/  tracing, metrics, logs
+alembic/          database migrations
+policies/         OPA/Rego rules + their tests
+examples/         reference agent cards
+docs/             deeper documentation
+scripts/          operational helpers
 ```
 
-The gateway is the only route to an agent ? there is no direct mode to configure.
+### Which doc for which question
 
-Agent invocations then go to `POST /a2a/{agent_name}` on the gateway, while
-registry, policy, approvals and tracing stay in this service. Details, naming
-rules and a config exporter: [docs/litellm-a2a.md](docs/litellm-a2a.md).
-
-### Add a protocol (MCP, REST, gRPC)
-```python
-# src/alstom_ao/adapters/mcp.py
-class MCPAdapter(AgentAdapter):
-    protocol = "mcp"
-
-    async def invoke(self, card, request): ...
-    async def check_health(self, card): ...
-    async def discover(self, endpoint): ...
-
-# factory.py
-registry.register(MCPAdapter(settings))
-```
-
-Nothing else changes: the orchestrator resolves adapters by `card.protocol`.
-
-### Add an agent
-
-Register a card (or import an A2A card) and give it capabilities, permissions and
-a risk level. No code change, no redeploy of the orchestrator.
-
-### Add a policy rule
-
-Add a rule to `policies/agent_authz.rego` and mirror it in `local_decision()` if
-you rely on the offline fallback. Decisions are recorded either way.
-
----
-
-## Production notes
-
-- **Readiness**: see [docs/production.md](docs/production.md) for the checklist this
-  service was audited against, including the two failure modes it now refuses to
-  hide (lost checkpoints, duplicate submissions).
-- **Architecture review**: [docs/architecture-review.md](docs/architecture-review.md)
-  has the component diagrams, per-block responsibilities, trust boundaries and the
-  open questions for an architecture sign-off.
-- **Schema**: `alembic upgrade head` (or `AO_DB_AUTO_CREATE=true` for dev).
-  `alembic` ships in the runtime image, so the prod stack can migrate itself.
-  Startup **refuses** to seed demo agents when `AO_ENVIRONMENT=prod`.
-- **Prod-like stack**:
-  `docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build`
-  — env=prod, no demo seeding, OPA enforced, live LLM through the gateway,
-  Postgres for state *and* checkpoints.
-- **Durable pauses**: install the `postgres` extra
-  (`langgraph-checkpoint-postgres`, `psycopg[binary]`) so an approval pause
-  survives a restart. If the checkpoint is gone, approving returns
-  `409 run_state_unavailable` instead of silently executing nothing.
-- **Idempotency**: send `Idempotency-Key` from the UI on submit. The same
-  key + user returns the original run (including a pending approval) and never
-  re-invokes an agent.
-- **Access control**: runs are readable by their owner, same-tenant reviewers, and
-  platform admins. Approver roles are tenant-scoped; only `platform-admin` is
-  global. Forward `X-Tenant-Id` for multi-tenant isolation.
-- **Identity trust**: the platform trusts `X-User-*` headers. Terminate auth at
-  the edge and strip these headers from untrusted clients, or set
-  `AO_TRUST_FORWARDED_IDENTITY=false`.
-- **Langfuse**: one trace per run; spans include `agent` observations so you can
-  see fan-out. Tracing is best-effort and never blocks a run.
-- **Budgets**: enforced in the gateway per run; a crash loop cannot outspend a
-  limit because usage is persisted with the run.
-- **Failure isolation**: a broken agent yields a labelled partial answer; a broken
-  LLM gateway falls back to deterministic concatenation.
-- **Metrics**: `/metrics` exposes counters (`ao.runs.*`, `ao.approvals.*`); set
-  `AO_METRICS_TOKEN` to require a scrape token.
-- **Retention**: run `python scripts/prune_trace_events.py --days 90` on a
-  schedule; `--dry-run` and `--stats` are safe to run any time.
-
----
-
-## Tests
-
-```bash
-python -m pytest -q      # 65 tests, hermetic (SQLite + fake A2A/gateway + mock LLM)
-python -m ruff check src tests examples
-```
-
-Coverage includes: registry CRUD/authz, planner validation and hallucination
-rejection, A2A message/legacy fallback/error mapping, **LiteLLM gateway routing
-(target URL, virtual-key auth, trace headers, version pinning, no legacy
-fallback)**, policy observe/enforce, approval approve/reject/expiry/self-approval,
-OpenAI-compatible streaming, trace ledger dual identity, and end-to-end partial
-failure.
-
----
-
-## Design lineage
-
-This platform deliberately combines production lessons from the reference
-repositories:
-
-| Source | What was adopted |
+| Question | Doc |
 |---|---|
-| `agent-template-orchestrator-advanced-langgraph` | Supervisor/specialist graph shape, human review queue, team isolation ideas |
-| `OmishaPatel-Multi-Agent-Orchestrator` | Langfuse + LangGraph tracing, hybrid checkpointing mindset |
-| `multi-agent-orchestrator` (awslabs) | Intent classifier contract, agent abstraction, streaming surface |
-| `loomvault` | Durable replay mindset, per-run budget with explicit strategies, no double-billing |
-| `orloj` | Policy/approval resources, A2A JSON-RPC semantics, declarative governance |
-| LiteLLM agent gateway docs | A2A proxy surface (`/a2a/{agent}`), virtual-key auth, wire-format pinning, trace-header propagation |
-| `OPA` | Rego decision points, fail-closed authorization |
-| `nod` | Approval-before-acting UX and trust as a first-class feature |
+| What fields does an agent card have? | [`docs/agent-card.md`](docs/agent-card.md) |
+| How does policy decide? | [`docs/policies.md`](docs/policies.md) |
+| How do approvals work? | [`docs/approvals.md`](docs/approvals.md) |
+| How is the gateway wired? | [`docs/litellm-a2a.md`](docs/litellm-a2a.md) |
+| How do I add an MCP server and its card? | [`docs/mcp-setup.md`](docs/mcp-setup.md) |
+| What are the budgets? | [`docs/budgets.md`](docs/budgets.md) |
+| What does the API expose? | [`docs/api.md`](docs/api.md) |
+| How does it fit together? | [`docs/architecture.md`](docs/architecture.md) |
+| How do I wire a chat UI to it? | [`docs/librechat.md`](docs/librechat.md) |
+| Is it production ready? | [`docs/production.md`](docs/production.md) |
+
+---
+
+## 9. Verify the install
+
+```bash
+# lint
+make lint            # or: ruff check src examples
+
+# boot the app and hit the critical endpoints
+make check           # or: python scripts/smoke_check.py
+
+# policy rules
+opa check policies
+```
+
+Expected output of `make check`:
+
+```
+  ok   GET /healthz -> 200
+  ok   GET /readyz -> 200
+  ok   GET /v1/agents -> 200
+  ok   GET /v1/agents/catalog -> 200
+  ok   GET /v1/policies/status -> 200
+
+5/5 endpoints healthy
+```
+
+---
+
+## 10. Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `ValueError: AO_LITELLM_PROXY_URL is required` | gateway URL empty | set `AO_LITELLM_PROXY_URL` in `.env` |
+| `401 Missing X-User-Id header` | no identity headers | add `-H 'X-User-Id: alice'` |
+| `403 ... requires the admin role` | wrong role for a registry write | use `X-User-Roles: admin` |
+| Register works but the planner picks no agent | `environment` mismatch | make the card's `environment` equal `AO_ENVIRONMENT` |
+| `no such table` on first request | `AO_DB_AUTO_CREATE=false` with no migration | run `alembic upgrade head`, or set it `true` in dev |
+| Agent never executes, run says `denied` | policy blocked it | check `/v1/runs/<id>/policy`; set `AO_POLICY_MODE=observe` while debugging |
+| `missing_proxy_key` on a health probe | gateway key absent | set `AO_LITELLM_PROXY_API_KEY` |
+| Port 8080 already in use | another server running | stop it, or set `AO_PORT` |
+
+### Reset local state
+
+The dev database is a single file:
+
+```bash
+# Windows
+del alstom_ao.db
+# macOS / Linux
+rm alstom_ao.db
+```
+
+The app recreates it on the next start when `AO_DB_AUTO_CREATE=true`.
 
 ---
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).

@@ -3,10 +3,9 @@
 This is the checklist the platform was audited against, with what is covered and
 what is deliberately left to the deployment.
 
-Audit method: static analysis (`ruff`, `mypy`), 101 hermetic tests, a live
-end-to-end demo, real OPA evaluation, a real Docker build and container health
-check, a Postgres + OPA + mock-agent Compose stack, and adversarial probes that
-tried to break the invariants below.
+Audit method: static analysis (`ruff`), a boot smoke check, real OPA evaluation, a
+real Docker build and container health check, and a Postgres + OPA + LiteLLM
+Compose stack.
 
 **Verdict:** the service is fit for a controlled production rollout after the
 go-live checklist in section 8. The remaining gaps are deployment responsibilities
@@ -17,16 +16,20 @@ not defects.
 
 ## 1. Correctness invariants
 
-| Invariant | Enforced by | Verified by |
-|---|---|---|
-| No agent runs unless registered, active, in-environment, policy-allowed | `plan` → `authorize` nodes | `test_policy.py`, `test_orchestration.py` |
-| A planned version is the executed version | card snapshots pinned in graph state | `test_approvals.py` |
-| No answer is invented when no agent matches | `no_match` terminal state | `test_orchestration.py` |
-| Destructive actions always pause for a human | `assess_approval` hard guardrails | `test_approvals.py` |
-| A rejected approval executes nothing | `approval` terminal branch | `test_approvals.py` |
-| A retried submission never re-executes | `Idempotency-Key` + unique constraint | `test_production_readiness.py` |
-| A lost checkpoint fails loudly, never silently | `RunService.ensure_resumable` | `test_production_readiness.py` |
-| Callers cannot read other tenants' runs/approvals | `security/access.py` | `test_access_control.py` |
+| Invariant | Enforced by |
+|---|---|
+| No agent runs unless registered, active, in-environment, policy-allowed | `orchestrator/nodes.py` `authorize_node` + `policies/agent_authz.rego` |
+| A planned version is the executed version | card snapshots pinned in graph state (`orchestrator/state.py`) |
+| No answer is invented when no agent matches | `no_match` terminal state in `orchestrator/nodes.py` |
+| Destructive actions always pause for a human | `assess_approval` guardrails + `policies/agent_authz.rego` `requires_approval` |
+| A rejected approval executes nothing | `approval` terminal branch in `orchestrator/nodes.py` |
+| A retried submission never re-executes | `Idempotency-Key` + unique constraint (`alembic/versions/574293311f59`) |
+| A lost checkpoint fails loudly, never silently | `RunService.ensure_resumable` |
+| Callers cannot read other tenants' runs/approvals | `security/access.py` |
+
+> These invariants are enforced in code and policy. Verify them by reading the
+> cited location, or exercise them end to end with the reference agent
+> (`examples/reference_agent`), which covers routing, policy, approval and execution.
 
 ### Two failure modes closed during the audit
 
@@ -54,7 +57,7 @@ not defects.
 | Tenant-scoped approvers, global platform admins only | implemented |
 | Policy fail-closed option (`AO_POLICY_MODE=enforce` + no local fallback) | implemented |
 | Approval separation of duties (no self-approval) | implemented |
-| Registry writes restricted to `platform-admin`/`registry-admin` | implemented |
+| Registry writes restricted to `admin` | implemented |
 | Metrics scrape token | implemented (`AO_METRICS_TOKEN`) |
 | No committed secrets | verified by scan |
 | **Edge authentication** (JWT/OIDC validation) | **deployment responsibility** |
@@ -106,22 +109,20 @@ the operator-visible symptom is a stuck run — use Postgres in production.
 | Prometheus metrics (counters + latency summary) | implemented |
 | OpenTelemetry/Langfuse traces with agent spans | implemented |
 | Dockerfile with healthcheck | implemented, runs as `appuser` (uid 10001) |
-| Docker Compose with Postgres, OPA, LiteLLM, mock agents | implemented and exercised end to end |
-| CI (lint + tests + OPA check) | `.github/workflows/ci.yml` |
-| Demo / smoke path without API keys | `scripts/run_demo.py` |
+| Docker Compose with Postgres, OPA, LiteLLM | implemented and exercised end to end |
+| CI (lint + boot smoke check + OPA check/test) | `.github/workflows/ci.yml` |
+| Local smoke path without API keys | `python scripts/smoke_check.py` |
 
 ---
 
-## 6. Test evidence
+## 6. Verification evidence
 
-### Hermetic suite
+### Automated gates
 
 ```
-101 tests, SQLite + fake A2A network + mock/scripted LLM + fake LiteLLM gateway
-coverage ~82% of src/alstom_ao
-ruff: clean
-mermaid diagrams: validated with mermaid.parse (4/4)
-OPA: `opa check` clean on openpolicyagent/opa:1.22.4
+ruff check src examples                : clean
+python scripts/smoke_check.py          : 5/5 endpoints healthy
+OPA opa check  (openpolicyagent 1.22.4) : clean
 migrations: upgrade -> head and downgrade -> base verified on SQLite
 ```
 

@@ -252,20 +252,3 @@ class AgentRegistryService:
             capability = ", ".join(item["capabilities"][:3])
             parts.append(f"{item['name']} ({capability})")
         return "; ".join(parts)
-
-
-async def seed_demo_agents(service: AgentRegistryService, settings: Settings) -> int:
-    """Idempotently register demo cards so a fresh install is usable immediately."""
-
-    from alstom_ao.registry.demo_cards import demo_cards
-
-    created = 0
-    for payload in demo_cards(settings):
-        try:
-            await service.get(payload.agent_id)
-            continue
-        except NotFoundError:
-            pass
-        await service.upsert(payload)
-        created += 1
-    return created

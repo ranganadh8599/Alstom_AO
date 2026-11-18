@@ -739,123 +739,120 @@ async def synthesize_node(state: OrchestratorState, config: RunnableConfig) -> d
     budget_note = ""
     grounding_note: str | None = None
     async with runtime.tracer.span("orchestrator.synthesize", input={"result_count": len(results)}) as observation:
-        if runtime.gateway.is_mock:
+        decision = runtime.budget.evaluate()
+        if decision.state is BudgetState.EXCEEDED:
+            # Agent work is already paid for and complete. Do not discard it
+            # just because the synthesis call cannot be afforded - that is the
+            # cascade this design exists to prevent.
             response = _compose_fallback(results)
+            budget_note = BUDGET_PARTIAL_NOTE.format(dimension=decision.dimension or "budget")
+            await runtime.tracer.record(
+                TraceAction.BUDGET_EXCEEDED,
+                TraceStatus.SKIPPED,
+                output={"detail": decision.describe(), "skipped": "llm_synthesis"},
+                metadata={"usage": runtime.budget.snapshot()},
+            )
+            metrics.incr("ao.budget.synthesis_skipped")
         else:
-            decision = runtime.budget.evaluate()
-            if decision.state is BudgetState.EXCEEDED:
-                # Agent work is already paid for and complete. Do not discard it
-                # just because the synthesis call cannot be afforded - that is the
-                # cascade this design exists to prevent.
-                response = _compose_fallback(results)
-                budget_note = BUDGET_PARTIAL_NOTE.format(dimension=decision.dimension or "budget")
-                await runtime.tracer.record(
-                    TraceAction.BUDGET_EXCEEDED,
-                    TraceStatus.SKIPPED,
-                    output={"detail": decision.describe(), "skipped": "llm_synthesis"},
-                    metadata={"usage": runtime.budget.snapshot()},
+            if decision.state is BudgetState.WARN:
+                await _apply_soft_tier(runtime, decision, _identity(state), state)
+            try:
+                identity = _identity(state)
+                llm_result = await runtime.gateway.complete_text(
+                    system=SYNTHESIZER_SYSTEM,
+                    user=build_synthesizer_user_prompt(
+                        query=state["query"],
+                        results=[result.model_dump(mode="json") for result in results],
+                        failures=failures,
+                        identity_label=f"{identity.user.user_id} ({', '.join(identity.user.roles)})",
+                    ),
                 )
+                response = llm_result.text.strip() or _compose_fallback(results)
+            except BudgetExceededError:
+                # Crossed the cap between the check and the call: degrade, do not fail.
+                logger.warning("Synthesis skipped by budget limit")
+                response = _compose_fallback(results)
+                budget_note = BUDGET_PARTIAL_NOTE.format(dimension="budget")
                 metrics.incr("ao.budget.synthesis_skipped")
-            else:
-                if decision.state is BudgetState.WARN:
-                    await _apply_soft_tier(runtime, decision, _identity(state), state)
+            except Exception as exc:
+                logger.warning("Synthesis failed, falling back to concatenation: %s", exc)
+                response = _compose_fallback(results)
+
+        # A prompt rule cannot guarantee the model kept its arithmetic out, so
+        # every generated answer is checked against the numbers the agents
+        # actually reported. "off" skips the check entirely.
+        grounding_mode = runtime.services.settings.synthesis_grounding
+        if grounding_mode != "off":
+            sources = [_agent_text(result) for result in results]
+            repaired: str | None = None
+
+            # Strict mode gets one cheap repair attempt before losing content:
+            # most invented figures are a prompt-following lapse, not an
+            # inability, and a rewrite usually keeps the useful text.
+            attempts = runtime.services.settings.synthesis_repair_attempts if grounding_mode == "strict" else 0
+            preliminary = check_grounding(response, sources, query=state.get("query", ""))
+            if not preliminary.ok and attempts > 0:
                 try:
-                    identity = _identity(state)
-                    llm_result = await runtime.gateway.complete_text(
+                    fix = await runtime.gateway.complete_text(
                         system=SYNTHESIZER_SYSTEM,
-                        user=build_synthesizer_user_prompt(
-                            query=state["query"],
-                            results=[result.model_dump(mode="json") for result in results],
-                            failures=failures,
-                            identity_label=f"{identity.user.user_id} ({', '.join(identity.user.roles)})",
+                        user=repair_prompt(
+                            answer=response,
+                            ungrounded=sorted(preliminary.ungrounded),
+                            sources=sources,
                         ),
                     )
-                    response = llm_result.text.strip() or _compose_fallback(results)
-                except BudgetExceededError:
-                    # Crossed the cap between the check and the call: degrade, do not fail.
-                    logger.warning("Synthesis skipped by budget limit")
-                    response = _compose_fallback(results)
-                    budget_note = BUDGET_PARTIAL_NOTE.format(dimension="budget")
-                    metrics.incr("ao.budget.synthesis_skipped")
-                except Exception as exc:
-                    logger.warning("Synthesis failed, falling back to concatenation: %s", exc)
-                    response = _compose_fallback(results)
+                    if fix.text.strip():
+                        repaired = fix.text.strip()
+                        metrics.incr("ao.synthesis.repair_attempted")
+                except Exception as exc:  # a failed repair must not fail the run
+                    logger.warning("Grounding repair attempt failed: %s", exc)
 
-            # A prompt rule cannot guarantee the model kept its arithmetic out, so
-            # every generated answer is checked against the numbers the agents
-            # actually reported. "off" skips the check entirely.
-            grounding_mode = runtime.services.settings.synthesis_grounding
-            if not runtime.gateway.is_mock and grounding_mode != "off":
-                sources = [_agent_text(result) for result in results]
-                repaired: str | None = None
-
-                # Strict mode gets one cheap repair attempt before losing content:
-                # most invented figures are a prompt-following lapse, not an
-                # inability, and a rewrite usually keeps the useful text.
-                attempts = runtime.services.settings.synthesis_repair_attempts if grounding_mode == "strict" else 0
-                preliminary = check_grounding(response, sources, query=state.get("query", ""))
-                if not preliminary.ok and attempts > 0:
-                    try:
-                        fix = await runtime.gateway.complete_text(
-                            system=SYNTHESIZER_SYSTEM,
-                            user=repair_prompt(
-                                answer=response,
-                                ungrounded=sorted(preliminary.ungrounded),
-                                sources=sources,
-                            ),
-                        )
-                        if fix.text.strip():
-                            repaired = fix.text.strip()
-                            metrics.incr("ao.synthesis.repair_attempted")
-                    except Exception as exc:  # a failed repair must not fail the run
-                        logger.warning("Grounding repair attempt failed: %s", exc)
-
-                response, report, grounding_note = apply_grounding(
-                    answer=response,
-                    results=sources,
-                    query=state.get("query", ""),
-                    mode=grounding_mode,
-                    fallback=_compose_fallback(results),
-                    repaired_answer=repaired,
+            response, report, grounding_note = apply_grounding(
+                answer=response,
+                results=sources,
+                query=state.get("query", ""),
+                mode=grounding_mode,
+                fallback=_compose_fallback(results),
+                repaired_answer=repaired,
+            )
+            if not report.ok:
+                metrics.incr("ao.synthesis.ungrounded")
+                await runtime.tracer.record(
+                    TraceAction.SYNTHESIS_UNGROUNDED,
+                    TraceStatus.SUCCEEDED if grounding_note == "warned" else TraceStatus.FAILED,
+                    output={
+                        "ungrounded": sorted(report.ungrounded),
+                        "grounded": sorted(report.grounded),
+                        "mode": grounding_mode,
+                        "action": grounding_note,
+                    },
                 )
-                if not report.ok:
-                    metrics.incr("ao.synthesis.ungrounded")
-                    await runtime.tracer.record(
-                        TraceAction.SYNTHESIS_UNGROUNDED,
-                        TraceStatus.SUCCEEDED if grounding_note == "warned" else TraceStatus.FAILED,
-                        output={
-                            "ungrounded": sorted(report.ungrounded),
-                            "grounded": sorted(report.grounded),
-                            "mode": grounding_mode,
-                            "action": grounding_note,
-                        },
-                    )
 
-                # An agent can be wrong; grounding cannot see that. What it can do
-                # is surface disagreement instead of silently trusting one agent.
-                agent_check = check_agent_consistency(
-                    [result.model_dump(mode="json") for result in results],
-                    {result.agent_id: _agent_text(result) for result in results},
+            # An agent can be wrong; grounding cannot see that. What it can do
+            # is surface disagreement instead of silently trusting one agent.
+            agent_check = check_agent_consistency(
+                [result.model_dump(mode="json") for result in results],
+                {result.agent_id: _agent_text(result) for result in results},
+            )
+            if not agent_check.ok:
+                metrics.incr("ao.agents.inconsistent")
+                await runtime.tracer.record(
+                    TraceAction.AGENTS_INCONSISTENT,
+                    TraceStatus.SUCCEEDED,
+                    output={
+                        "prose_vs_structured": agent_check.text_contradicts_structured,
+                        "disagreements": agent_check.disagreements,
+                    },
                 )
-                if not agent_check.ok:
-                    metrics.incr("ao.agents.inconsistent")
-                    await runtime.tracer.record(
-                        TraceAction.AGENTS_INCONSISTENT,
-                        TraceStatus.SUCCEEDED,
-                        output={
-                            "prose_vs_structured": agent_check.text_contradicts_structured,
-                            "disagreements": agent_check.disagreements,
-                        },
+                if agent_check.disagreements:
+                    names = "; ".join(
+                        f"{item['metric']} differs across {', '.join(sorted(item['agents']))}"
+                        for item in agent_check.disagreements
                     )
-                    if agent_check.disagreements:
-                        names = "; ".join(
-                            f"{item['metric']} differs across {', '.join(sorted(item['agents']))}"
-                            for item in agent_check.disagreements
-                        )
-                        response += (
-                            f"\n\n> ⚠️ Agents disagreed on reported values: {names}. "
-                            "Verify with the owning team before acting."
-                        )
+                    response += (
+                        f"\n\n> ⚠️ Agents disagreed on reported values: {names}. "
+                        "Verify with the owning team before acting."
+                    )
 
         if failures:
             response += (

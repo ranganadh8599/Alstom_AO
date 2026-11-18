@@ -6,6 +6,7 @@ import httpx
 
 from alstom_ao.adapters.a2a import A2AAdapter
 from alstom_ao.adapters.base import AgentAdapter
+from alstom_ao.adapters.mcp import MCPAdapter
 from alstom_ao.config import Settings
 from alstom_ao.domain.enums import AgentProtocol
 from alstom_ao.errors import UnsupportedProtocolError
@@ -48,6 +49,6 @@ class AdapterRegistry:
     ) -> AdapterRegistry:
         registry = cls()
         registry.register(A2AAdapter(settings, transport=transport))
-        # Future: registry.register(MCPAdapter(settings))
-        #         registry.register(RestAdapter(settings))
+        registry.register(MCPAdapter(settings, transport=transport))
+        # Future: registry.register(RestAdapter(settings))
         return registry

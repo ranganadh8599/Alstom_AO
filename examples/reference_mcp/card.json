@@ -1,0 +1,39 @@
+{
+  "agent_id": "mcp-invoice-status",
+  "name": "Finance Invoice Status (MCP)",
+  "description": "Reports the payment status, vendor and matching purchase order of a vendor invoice using the invoice_status MCP tool.",
+  "platform": "reference",
+  "protocol": "mcp",
+  "endpoint": "http://mcp-reference:9102/mcp",
+  "owner": "Reference",
+  "capabilities": [
+    "invoice payment status",
+    "vendor lookup by invoice",
+    "matching purchase order"
+  ],
+  "input_schema": {
+    "type": "object",
+    "properties": { "invoice_id": { "type": "string" } }
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": { "content": { "type": "array" } }
+  },
+  "auth": { "type": "none" },
+  "permissions": {
+    "allowed_roles": ["user", "admin"],
+    "allowed_actions": ["read", "query"],
+    "data_classification": "internal"
+  },
+  "version": "1.0.0",
+  "status": "active",
+  "environment": "dev",
+  "risk_level": "low",
+  "tags": ["finance", "invoice", "mcp"],
+  "examples": ["What is the status of invoice INV-2024-0912?"],
+  "metadata": {
+    "mcp_server_id": "alstom_reference",
+    "mcp_tool": "invoice_status",
+    "mcp_argument": "invoice_id"
+  }
+}

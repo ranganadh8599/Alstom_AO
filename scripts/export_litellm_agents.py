@@ -6,7 +6,7 @@ LiteLLM side, so drift becomes visible in a diff.
 
     python scripts/export_litellm_agents.py \\
         --base-url http://localhost:8080 \\
-        --user-id admin --roles platform-admin \\
+        --user-id admin --roles admin \\
         --out litellm/agents.generated.yaml
 """
 
@@ -78,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", default="http://localhost:8080")
     parser.add_argument("--user-id", default="admin")
-    parser.add_argument("--roles", default="platform-admin")
+    parser.add_argument("--roles", default="admin")
     parser.add_argument("--environment", default=None)
     parser.add_argument("--out", default=None, help="write to a file instead of stdout")
     args = parser.parse_args(argv)

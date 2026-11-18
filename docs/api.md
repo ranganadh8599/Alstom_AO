@@ -17,7 +17,7 @@ Base URL: `http://localhost:8080`. Interactive docs: `/docs`.
 | `X-Trace-Id` | no | 32-hex; joins the UI's trace |
 | `X-Workflow-Id` | no | caller's workflow id |
 
-Registry writes additionally require `platform-admin` or `registry-admin`.
+Registry writes additionally require `admin`.
 
 ## Errors
 
@@ -186,7 +186,7 @@ curl -s localhost:8080/v1/orchestrate "${H[@]}" \
   -d '{"query":"Check invoice INV-2024-0912 for duplicate charges"}'
 
 curl -s localhost:8080/v1/agents \
-  -H 'X-User-Id: admin' -H 'X-User-Roles: platform-admin'
+  -H 'X-User-Id: admin' -H 'X-User-Roles: admin'
 
 curl -sN localhost:8080/v1/chat/completions "${H[@]}" \
   -d '{"model":"alstom-ao","stream":true,"messages":[{"role":"user","content":"How many days of annual leave?"}]}'

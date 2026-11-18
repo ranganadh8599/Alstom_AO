@@ -1,0 +1,42 @@
+{
+  "agent_id": "sinequa-ronaldo-search",
+  "name": "Sinequa Search (Ronaldo)",
+  "description": "Searches Sinequa enterprise content through the Ronaldo MCP server and answers questions about Cristiano Ronaldo.",
+  "platform": "sinequa",
+  "protocol": "mcp",
+  "endpoint": "https://dev-globalsearch.alstom.hub/mcp/Ronaldo_SinequaSearch",
+  "owner": "Sinequa",
+  "capabilities": [
+    "sinequa search",
+    "ronaldo information",
+    "enterprise content search"
+  ],
+  "input_schema": {
+    "type": "object",
+    "properties": { "query": { "type": "string" } }
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": { "content": { "type": "array" } }
+  },
+  "auth": { "type": "none" },
+  "permissions": {
+    "allowed_roles": ["user", "admin"],
+    "allowed_actions": ["read", "query"],
+    "data_classification": "internal"
+  },
+  "version": "1.0.0",
+  "status": "active",
+  "environment": "dev",
+  "risk_level": "low",
+  "tags": ["sinequa", "search", "ronaldo", "mcp"],
+  "examples": [
+    "What do we know about Cristiano Ronaldo?",
+    "Search Sinequa for Ronaldo"
+  ],
+  "metadata": {
+    "mcp_server_id": "ronaldo_sinequa",
+    "mcp_tool": "REPLACE_WITH_TOOL_NAME",
+    "mcp_argument": "query"
+  }
+}

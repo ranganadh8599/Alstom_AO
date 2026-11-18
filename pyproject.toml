@@ -28,9 +28,6 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-  "pytest>=8.2",
-  "pytest-asyncio>=0.23",
-  "asgi-lifespan>=2.1",
   "ruff>=0.6",
 ]
 postgres = [
@@ -45,14 +42,6 @@ alstom-ao = "alstom_ao.__main__:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/alstom_ao"]
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-asyncio_mode = "auto"
-filterwarnings = [
-  "ignore::DeprecationWarning",
-]
-addopts = "-q"
-
 [tool.ruff]
 line-length = 120
 target-version = "py311"
@@ -60,6 +49,3 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC"]
 ignore = ["E501", "B008"]
-
-[tool.ruff.lint.per-file-ignores]
-"tests/*" = ["B011"]

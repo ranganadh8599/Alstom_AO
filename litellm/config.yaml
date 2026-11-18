@@ -1,4 +1,4 @@
-# LiteLLM agent gateway configuration for the Alstom AO demo stack.
+# LiteLLM agent gateway configuration.
 #
 # Every agent the orchestration layer may call is registered here so LiteLLM can
 # provide routing, logging, spend attribution and A2A protocol-version handling.
@@ -7,6 +7,15 @@
 # registry card (or leave that metadata unset and use the card's agent_id).
 # Generate this block from the registry with:
 #     python scripts/export_litellm_agents.py
+#
+# The `agents:` block below registers ONE reference agent so a fresh checkout is
+# testable immediately. Replace it with your real agents:
+#
+#   1. register cards in Alstom AO (POST /v1/agents)
+#   2. python scripts/export_litellm_agents.py --out litellm/agents.generated.yaml
+#
+# Keep `agent_name` in sync with `metadata.litellm_agent_name` on the registry
+# card, or leave that metadata unset to use the card's agent_id.
 
 model_list:
   - model_name: gpt-4o-mini
@@ -49,12 +58,19 @@ agents:
   - agent_name: finance-invoice-auditor
     agent_card_params:
       name: Finance Invoice Auditor
-      description: Audits vendor invoices, detects duplicates and checks purchase orders.
-      url: http://mock-agents:9101/agents/finance
-      version: 2.3.0
+      description: Audits vendor invoices, detects duplicate charges and checks purchase orders.
+      url: http://reference-agent:9101/agents/finance
+      version: 1.0.0
       protocolVersion: "0.3"
+      preferredTransport: JSONRPC
+      additionalInterfaces:
+        - url: http://reference-agent:9101/agents/finance
+          transport: JSONRPC
       capabilities:
         streaming: false
+        pushNotifications: false
+      defaultInputModes: [text/plain]
+      defaultOutputModes: [text/plain, application/json]
       skills:
         - id: invoice-audit
           name: invoice audit
@@ -62,47 +78,40 @@ agents:
           tags: [finance, invoice, audit, duplicate]
           examples:
             - Check invoice INV-2024-0912 for duplicate charges
-        - id: payment-status
-          name: vendor payment status
-          description: Report the payment status of a supplier invoice.
-          tags: [finance, payment, vendor]
     litellm_params:
       api_key: os.environ/ALSTOM_AO_AGENT_KEY
 
-  - agent_name: hr-policy-advisor
-    agent_card_params:
-      name: HR Policy Advisor
-      description: Answers HR policy questions about leave, travel and benefits.
-      url: http://mock-agents:9101/agents/hr
-      version: 1.8.2
-      protocolVersion: "0.3"
-      capabilities:
-        streaming: false
-      skills:
-        - id: hr-policy
-          name: hr policy lookup
-          description: Cite the HR policy that answers a people question.
-          tags: [hr, policy, leave, benefits]
-          examples:
-            - How many days of annual leave do I get?
-    litellm_params:
-      api_key: os.environ/ALSTOM_AO_AGENT_KEY
-
-  - agent_name: it-service-desk
-    agent_card_params:
-      name: IT Service Desk
-      description: Resolves IT knowledge questions about VPN, access and software.
-      url: http://mock-agents:9101/agents/it
-      version: 4.1.0
-      protocolVersion: "0.3"
-      capabilities:
-        streaming: false
-      skills:
-        - id: vpn-support
-          name: vpn troubleshooting
-          description: Step-by-step VPN diagnostics.
-          tags: [it, vpn, access]
-          examples:
-            - How do I connect to the VPN from a Mac?
-    litellm_params:
-      api_key: os.environ/ALSTOM_AO_AGENT_KEY
+# ---------------------------------------------------------------------------
+# MCP servers.
+#
+# LiteLLM is the MCP gateway: it owns the MCP session (initialize, protocol
+# negotiation, transport, reconnects) and the upstream credentials, and exposes
+# the tools to Alstom AO over REST:
+#     GET  /mcp-rest/tools/list
+#     POST /mcp-rest/tools/call
+# The orchestrator never speaks MCP itself and never dials a server.
+#
+# Replace `alstom_reference` with your real MCP servers. Both the server key and
+# the upstream tool name are referenced from the AO card:
+#     metadata.mcp_server_id: alstom_reference
+#     metadata.mcp_tool:      invoice_status
+# ---------------------------------------------------------------------------
+mcp_servers:
+  alstom_reference:
+    url: "http://mcp-reference:9102/mcp"
+    transport: "http"
+    auth_type: "none"
+  # Sinequa Search (Ronaldo MCP server).
+  #
+  # The API key is read from the gateway's environment, never from this file and
+  # never from an AO card: cards are stored in Postgres and returned by the API.
+  # Set SINEQUA_MCP_API_KEY in .env (gitignored) and restart litellm.
+  #
+  # The host is internal (dev-globalsearch.alstom.hub), so the gateway needs
+  # corporate DNS/VPN. Add `network_mode` or a DNS entry if the container cannot
+  # resolve it while the host can.
+  ronaldo_sinequa:
+    url: "https://dev-globalsearch.alstom.hub/mcp/Ronaldo_SinequaSearch"
+    transport: "http"
+    auth_type: "bearer_token"
+    auth_value: os.environ/SINEQUA_MCP_API_KEY

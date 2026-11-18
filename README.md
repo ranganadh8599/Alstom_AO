@@ -415,6 +415,9 @@ you rely on the offline fallback. Decisions are recorded either way.
 - **Readiness**: see [docs/production.md](docs/production.md) for the checklist this
   service was audited against, including the two failure modes it now refuses to
   hide (lost checkpoints, duplicate submissions).
+- **Architecture review**: [docs/architecture-review.md](docs/architecture-review.md)
+  has the component diagrams, per-block responsibilities, trust boundaries and the
+  open questions for an architecture sign-off.
 - **Schema**: `alembic upgrade head` (or `AO_DB_AUTO_CREATE=true` for dev).
   `alembic` ships in the runtime image, so the prod stack can migrate itself.
   Startup **refuses** to seed demo agents when `AO_ENVIRONMENT=prod`.
